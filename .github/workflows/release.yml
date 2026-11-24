@@ -1,0 +1,144 @@
+# release.yml
+# SPDX-License-Identifier: CC0-1.0
+# This file was created by an AI model: openai/gpt-6.2-sol
+
+name: Publish Python package
+run-name: Publish ${{ github.ref_name }} to ${{ github.event_name == 'push' && 'pypi' || inputs.destination }}
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      destination:
+        description: Package index
+        required: true
+        type: choice
+        default: test-pypi
+        options:
+          - test-pypi
+          - pypi
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}-${{ github.event_name == 'push' && 'pypi' || inputs.destination }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate-build:
+    name: Validate and build the tagged revision
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.distributions.outputs.artifact-id }}
+      destination: ${{ steps.release.outputs.destination }}
+    steps:
+      - name: Check out the triggering commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Require a matching version tag and resolve the destination
+        id: release
+        env:
+          RELEASE_REF: ${{ github.ref }}
+          RELEASE_EVENT: ${{ github.event_name }}
+          RELEASE_DESTINATION: ${{ inputs.destination }}
+        run: |
+          python3 tests/check_release.py "$RELEASE_REF" \
+            --event "$RELEASE_EVENT" --destination "$RELEASE_DESTINATION" >> "$GITHUB_OUTPUT"
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.7"
+          python-version: "3.13.5"
+          enable-cache: false
+
+      - name: Install checksum-pinned NVC
+        run: |
+          asset="nvc_1.21.1-1_amd64_ubuntu-24.04.deb"
+          package="$RUNNER_TEMP/$asset"
+          curl --fail --location --silent --show-error --retry 3 \
+            --proto '=https' --proto-redir '=https' \
+            --output "$package" \
+            "https://github.com/nickg/nvc/releases/download/r1.21.1/$asset"
+          printf '%s  %s\n' \
+            'a259847c86fe0e547c481b20686c62a97245a3d44d40d79b7f70ac7408e9bda6' \
+            "$package" | sha256sum --check --strict
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends "$package"
+          test "$(dpkg-query --show --showformat='${Version}' nvc)" = "1.21.1-1"
+          nvc --version
+
+      - name: Install locked development dependencies
+        run: uv sync --locked
+
+      - name: Check types
+        run: uv run --locked pyrefly check
+
+      - name: Check formatting
+        run: uv run --locked ruff format --check .
+
+      - name: Check lint
+        run: uv run --locked ruff check .
+
+      - name: Run Python and NVC tests
+        run: uv run --locked pytest -q
+
+      - name: Build and validate the release distributions
+        run: |
+          mkdir "$RUNNER_TEMP/release-dist"
+          uv build --no-sources --out-dir "$RUNNER_TEMP/release-dist"
+          uv run --locked python tests/test_distribution.py --dist "$RUNNER_TEMP/release-dist"
+          sha256sum "$RUNNER_TEMP/release-dist/"*.whl "$RUNNER_TEMP/release-dist/"*.tar.gz
+
+      - name: Save only the validated sdist and wheel
+        id: distributions
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-distributions-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/release-dist/*.whl
+            ${{ runner.temp }}/release-dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish validated distributions
+    needs: validate-build
+    if: needs.validate-build.outputs.destination == 'pypi' || needs.validate-build.outputs.destination == 'test-pypi'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: ${{ needs.validate-build.outputs.destination }}
+      url: ${{ needs.validate-build.outputs.destination == 'pypi' && 'https://pypi.org/p/pytest-sloppy-tools' || 'https://test.pypi.org/p/pytest-sloppy-tools' }}
+    permissions:
+      id-token: write
+    steps:
+      # No checkout, dependency installation or package execution in this job.
+      - name: Download this run's validated distributions
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.validate-build.outputs.artifact-id }}
+          merge-multiple: true
+          path: dist/
+
+      - name: Publish with Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          repository-url: ${{ needs.validate-build.outputs.destination == 'pypi' && 'https://upload.pypi.org/legacy/' || 'https://test.pypi.org/legacy/' }}
+          packages-dir: dist/
+          verify-metadata: true
+          attestations: true
+          print-hash: true
+          skip-existing: false

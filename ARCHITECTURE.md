@@ -40,3 +40,8 @@ labels and slot counts, and updates the row after teardown. In serial runs it
 displays pytest's capture sections and ends the progress line before a capture
 fixture sends output to the terminal. With workers it draws around the
 controller's stream output. The child process never renders progress.
+
+GitHub Actions builds the Sphinx site and deploys it to Pages from `master`.
+The release workflow checks that the tag matches `pyproject.toml`, runs the
+tests, and validates the built wheel and source distribution. A separate job
+publishes those files with PyPI Trusted Publishing.

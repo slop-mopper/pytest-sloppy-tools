@@ -8,7 +8,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pytest-sloppy-tools"
-version = "0.2.0"
+version = "0.2.1"
 description = "Helpers and fixtures for pytest workflows"
 readme = "README.md"
 requires-python = ">=3.13"
