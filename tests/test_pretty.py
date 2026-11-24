@@ -67,7 +67,7 @@ def test_pretty_groups_cases_and_reprints_after_output(tmp_path: Path, mode: str
 		"conftest.py",
 	)
 	workers = [] if mode == "serial" else ["--workers=1", f"--output={mode}"]
-	result = _run(tmp_path, "-v", "--color=yes", "--show-capture=no", *workers)
+	result = _run(tmp_path, "-v", "--color=yes", *workers)
 	assert result.returncode == 1, result.stdout + result.stderr
 	progress, summary = result.stdout.split("CUSTOM SUMMARY", 1)
 	rows = [line for line in progress.splitlines() if line.startswith("test_sim ")]
@@ -82,7 +82,12 @@ def test_pretty_groups_cases_and_reprints_after_output(tmp_path: Path, mode: str
 	assert progress.index(rows[0]) < progress.index("simulation trace\n") < progress.index(rows[1])
 	assert progress.count("simulation trace\n") == 1
 	assert "PASSED" not in progress
-	assert "1 failed, 2 passed, 1 skipped" in re.sub(r"\x1b\[[0-9;]*m", "", summary)
+	assert "\x1b[2m—— end stderr\x1b[0m" in progress
+	plain = re.sub(r"\x1b\[[0-9;]*m", "", summary)
+	assert "  × test_sim (2) — AssertionError: simulation failed" in plain
+	assert "Results: 2 passed, 1 failed, 1 skipped in " in plain
+	assert "short test summary info" not in plain
+	assert "simulation trace" not in plain
 
 
 def test_pretty_serial_uncaptured_output(tmp_path: Path) -> None:
@@ -101,7 +106,8 @@ def test_pretty_serial_uncaptured_output(tmp_path: Path) -> None:
 	result = _run(tmp_path, "-s", "--color=no")
 	assert result.returncode == 0, result.stdout + result.stderr
 	assert re.search(
-		r"^test_sim  · +50%\n--- [^\n]+ ---\nnative output without newline\ntest_sim  ·· +100%$",
+		r"^test_sim  · +50%\nstdout │ test_sim \(1\)\nnative output without newline\n"
+		r"—— end stdout\ntest_sim  ·· +100%$",
 		result.stdout,
 		re.MULTILINE,
 	)
@@ -165,8 +171,8 @@ def test_pretty_phase_outcomes_and_disambiguation(tmp_path: Path) -> None:
 		f"{'test_skip  s':<{width - 4}} 66%",
 		f"{'test_b.py::test_sim  ·':<{width - 4}}100%",
 	]
-	assert "ValueError: teardown error" in result.stdout
-	assert "2 passed, 1 skipped, 1 error" in result.stdout
+	assert "  × test_a.py::test_sim — teardown: ValueError: teardown error" in result.stdout
+	assert "Results: 1 passed, 1 failed, 1 skipped in " in result.stdout
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="parallel runner requires Linux")
@@ -276,7 +282,57 @@ def test_pretty_terminal_output_starts_after_progress_row(tmp_path: Path, mode: 
 	workers = [] if mode == "serial" else ["--workers=1", f"--output={mode}"]
 	transcript = _run_terminal(tmp_path, *workers)
 	assert re.search(
-		r"test_sim +0%\r\n(?:--- test_example.py::test_sim \[stdout\] ---\r\n)?native output without newline",
+		r"test_sim +0%\r\nstdout │ test_sim\r\nnative output without newline",
 		transcript,
 	)
-	assert re.search(r"\r\ntest_sim  · {12}100%\r\n", transcript)
+	assert re.search(r"\r\n—— end stdout\r\ntest_sim  · {12}100%\r\n", transcript)
+	assert transcript.count("stdout │ test_sim") == 1
+
+
+def test_pretty_parameter_labels_in_output_and_summary(tmp_path: Path) -> None:
+	_write(
+		tmp_path,
+		"""
+		import logging
+		import pytest
+
+		@pytest.mark.parametrize("width", [32])
+		@pytest.mark.parametrize("mode", ["active-low"])
+		def test_positional(mode, width):
+		    print("POSITIONAL_OUTPUT")
+
+		@pytest.mark.parametrize("case", [0], ids=["width=32;mode=active-low"])
+		def test_named(case):
+		    logging.warning("SIMULATOR_LOG")
+		    try:
+		        raise SystemExit(1)
+		    except SystemExit as exc:
+		        raise RuntimeError("Simulation failed: exit code 1") from exc
+		""",
+	)
+	result = _run(tmp_path, "--color=yes")
+	assert result.returncode == 1, result.stdout + result.stderr
+	assert "\x1b[36mactive\x1b[0m\x1b[2m-\x1b[0m" in result.stdout
+	assert "\x1b[35mwidth\x1b[0m\x1b[2m=\x1b[0m\x1b[36m32\x1b[0m" in result.stdout
+	plain = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
+	assert "stdout │ test_positional (active-low-32)\nPOSITIONAL_OUTPUT\n—— end stdout" in plain
+	assert "log │ test_named (width=32; mode=active-low)" in plain
+	assert "  × test_named (width=32; mode=active-low) — RuntimeError: Simulation failed: exit code 1" in plain
+	assert plain.count("SIMULATOR_LOG") == 1
+	assert "During handling of the above exception" not in plain
+	assert "captured" not in plain.lower()
+
+	detailed = _run(tmp_path, "--color=no", "--tb=short", "--show-capture=no")
+	assert detailed.returncode == 1
+	assert "SystemExit: 1" in detailed.stdout
+	assert "RuntimeError: Simulation failed: exit code 1" in detailed.stdout
+	assert detailed.stdout.count("SIMULATOR_LOG") == 1
+	assert "Results: 1 passed, 1 failed in " in detailed.stdout
+
+
+def test_pretty_collection_error_keeps_the_reason(tmp_path: Path) -> None:
+	_write(tmp_path, 'raise RuntimeError("collection broke")\n', "test_broken.py")
+	result = _run(tmp_path, "--color=no")
+	assert result.returncode == 2, result.stdout + result.stderr
+	assert "× test_broken.py [collection] — RuntimeError: collection broke" in result.stdout
+	assert "1 collection error" in result.stdout

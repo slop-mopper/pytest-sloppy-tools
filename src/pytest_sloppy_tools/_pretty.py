@@ -2,21 +2,24 @@
 # SPDX-License-Identifier: CC0-1.0
 # This file was created by an AI model: openai/gpt-6.2-sol
 
-"""Opt-in progress display for the controller and the serial runner."""
+"""Opt-in terminal display for the controller and the serial runner."""
 
+import re
 from collections import Counter
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 import pytest
 from _pytest._io.wcwidth import wcswidth
-from _pytest.terminal import TerminalReporter
+from _pytest.terminal import TerminalReporter, format_session_duration
 
 
 _PLUGIN = "sloppy-pretty"
 _PROGRESS_GAP = 12
 _PERCENT_WIDTH = 4
+_STREAM_COLOURS = {"stdout": "blue", "stderr": "yellow", "log": "purple"}
+_SUMMARY_COLOURS = {"error": "red", "warnings": "yellow", "deselected": "cyan"}
 _MARKS = {
 	"passed": ("·", {"green": True}),
 	"failed": ("×", {"red": True}),
@@ -54,6 +57,46 @@ def _quiet_progress(terminal: TerminalReporter) -> Generator[None]:
 		start.function, report_hook.function, terminal._show_progress_info = original
 
 
+@contextmanager
+def _replace_summary(terminal: TerminalReporter, summary: Callable[[], None]) -> Generator[None]:
+	"""Replace pytest's own summary sections without disabling third-party hooks."""
+	config = terminal.config
+	methods = ["short_test_summary", "summary_stats", "summary_passes", "summary_xpasses"]
+	if config.getoption("tbstyle") == "auto" and not config.getoption("fulltrace"):
+		methods.extend(("summary_failures", "summary_errors", "summary_xfailures"))
+	originals = {method: getattr(terminal, method) for method in methods}
+	try:
+		for method in methods:
+			setattr(terminal, method, summary if method == "summary_stats" else _noop)
+		yield
+	finally:
+		for method, original in originals.items():
+			setattr(terminal, method, original)
+
+
+def _noop() -> None:
+	pass
+
+
+def _inline(text: str) -> str:
+	"""Keep each label or diagnostic on a single terminal line."""
+	return "".join(char if char.isprintable() else ascii(char)[1:-1] for char in text)
+
+
+def _reason(report: pytest.TestReport | pytest.CollectReport) -> str:
+	longrepr = report.longrepr
+	crash = getattr(longrepr, "reprcrash", None)
+	if crash is not None:
+		text = crash.message
+	elif isinstance(longrepr, tuple):
+		text = longrepr[2]
+	else:
+		text = str(longrepr) if longrepr is not None else ""
+	lines = [line.strip() for line in text.splitlines() if line.strip()]
+	message = _inline(lines[0] if crash is not None and lines else lines[-1] if lines else "")
+	return message[:197] + "…" if len(message) > 200 else message
+
+
 @dataclass(eq=False)
 class _Row:
 	label: str
@@ -66,13 +109,23 @@ class _Row:
 class _Case:
 	row: _Row
 	slot: int
+	parameters: str | None
 	outcome: str | None = None
 	output_shown: bool = False
+	finished: bool = False
+	failures: list[tuple[str, str]] = field(default_factory=list)
 
 
 def _function(item: pytest.Item) -> tuple[str, str]:
 	name = item.originalname if isinstance(item, pytest.Function) else item.name
 	return (item.parent.nodeid if item.parent is not None else "", name)
+
+
+def _parameters(item: pytest.Item, name: str) -> str | None:
+	# Strip the known function name first: a parameter ID may itself contain
+	# brackets, path separators, or even pytest's "::" separator.
+	suffix = item.name.removeprefix(name)
+	return suffix[1:-1] if suffix.startswith("[") and suffix.endswith("]") else None
 
 
 class _Pretty:
@@ -86,6 +139,7 @@ class _Pretty:
 		self.percent_column = 0
 		self.completed = 0
 		self.open_row: _Row | None = None
+		self.output_block: tuple[int, str] | None = None
 
 	def _prepare(self, items: list[pytest.Item]) -> None:
 		keys = [_function(item) for item in items]
@@ -94,9 +148,9 @@ class _Pretty:
 			parent, name = key
 			if key not in self.rows:
 				label = f"{parent}::{name}" if counts[name] > 1 and parent else name
-				self.rows[key] = _Row(label if label.isprintable() else repr(label))
+				self.rows[key] = _Row(_inline(label))
 			row = self.rows[key]
-			self.cases.append(_Case(row, row.size))
+			self.cases.append(_Case(row, row.size, _parameters(item, name)))
 			row.size += 1
 			self.indices[id(item)] = index
 		self.percent_column = max(wcswidth(row.label) + 2 + row.size for row in self.rows.values()) + _PROGRESS_GAP
@@ -111,6 +165,7 @@ class _Pretty:
 			self.open_row = None
 
 	def _show(self, row: _Row, *, seal: bool = False) -> None:
+		self._end_output()
 		writer = self.terminal._tw
 		last = max(row.marks, default=-1)
 		progress = f"{self.completed * 100 // len(self.cases)}%".rjust(_PERCENT_WIDTH)
@@ -143,6 +198,7 @@ class _Pretty:
 		case = self.cases[index]
 		if report.failed:
 			case.outcome = "failed"
+			case.failures.append((report.when, _reason(report)))
 		elif case.outcome != "failed":
 			if report.skipped:
 				case.outcome = "xfailed" if hasattr(report, "wasxfail") else "skipped"
@@ -157,12 +213,51 @@ class _Pretty:
 			self._seal()
 		case.output_shown = True
 
-	def heading(self, index: int, title: str) -> None:
+	def _case_label(self, case: _Case) -> str:
+		markup = self.terminal._tw.markup
+		name = markup(case.row.label, bold=True)
+		if case.parameters is None:
+			return name
+		params = _inline(case.parameters)
+		named = [part.partition("=") for part in params.split(";")]
+		if all(separator and key.strip().isidentifier() for key, separator, _ in named):
+			parts = [
+				markup(key.strip(), purple=True) + markup("=", light=True) + markup(value.strip(), cyan=True)
+				for key, _, value in named
+			]
+			formatted = markup("; ", light=True).join(parts)
+		else:
+			# Positional IDs can contain literal hyphens. Emphasise separators
+			# without changing the ID or assuming where each value starts.
+			formatted = "".join(
+				markup(part, light=True) if part == "-" else markup(part, cyan=True)
+				for part in re.split(r"(?<=\w)(-)(?=\w)", params)
+			)
+		return name + markup(" (", light=True) + formatted + markup(")", light=True)
+
+	def heading(self, index: int, stream: str) -> None:
+		if self.output_block == (index, stream):
+			return
+		self._end_output()
 		self._before_output(index)
-		self.terminal.write(f"{title}\n", flush=True)
+		markup = self.terminal._tw.markup
+		colour = _STREAM_COLOURS.get(stream, "blue")
+		label = markup(stream, **{colour: True, "bold": True})
+		self.terminal.write(f"{label} {markup('│', light=True)} {self._case_label(self.cases[index])}\n", flush=True)
+		self.output_block = index, stream
+
+	def _end_output(self) -> None:
+		if self.output_block is not None:
+			_, stream = self.output_block
+			self.output_block = None
+			footer = self.terminal._tw.markup(f"—— end {stream}", light=True)
+			self.terminal.write(f"{footer}\n", flush=True)
 
 	def finish(self, index: int) -> None:
 		case = self.cases[index]
+		if self.output_block is not None and self.output_block[0] == index:
+			self._end_output()
+		case.finished = True
 		self.completed += 1
 		row = case.row
 		if case.outcome is not None:
@@ -181,10 +276,65 @@ class _Pretty:
 			try:
 				return (yield)
 			finally:
+				self._end_output()
 				self._seal()
 				for row in self.rows.values():
 					if row.fresh:
 						self._show(row, seal=True)
+
+	def _summary_stats(self) -> None:
+		terminal = self.terminal
+		markup = terminal._tw.markup
+		counts = Counter(case.outcome for case in self.cases if case.finished)
+		collection_errors = [
+			report for report in terminal.stats.get("error", ()) if isinstance(report, pytest.CollectReport)
+		]
+		collection_skips = sum(isinstance(report, pytest.CollectReport) for report in terminal.stats.get("skipped", ()))
+		if not terminal.no_summary and (collection_errors or any(case.failures for case in self.cases)):
+			terminal.write_line("Failed tests", red=True, bold=True)
+			cross = markup("×", red=True)
+			for report in collection_errors:
+				reason = _reason(report)
+				label = f"{_inline(report.nodeid) or '<collection>'} [collection]"
+				terminal.write_line(f"  {cross} {label}" + (f" — {reason}" if reason else ""))
+			for case in self.cases:
+				if not case.failures:
+					continue
+				details = []
+				for phase, reason in case.failures:
+					if phase == "call":
+						details.append(reason)
+					else:
+						details.append(f"{phase}: {reason}" if reason else phase)
+				reasons = "; ".join(filter(None, details))
+				terminal.write_line(f"  {cross} {self._case_label(case)}" + (f" — {reasons}" if reasons else ""))
+		parts = [
+			markup(f"{counts[outcome]} {outcome}", **colour)
+			for outcome, (_, colour) in _MARKS.items()
+			if counts[outcome] or outcome in ("passed", "failed") and self.completed
+		]
+		if not parts:
+			parts.append("no tests ran")
+		for category, count in (
+			("error", len(collection_errors)),
+			("skipped at collection", collection_skips),
+			("warnings", len(terminal.stats.get("warnings", ()))),
+			("deselected", len(terminal.stats.get("deselected", ()))),
+		):
+			if count:
+				label = "collection error" if category == "error" else category
+				if category == "error" and count != 1:
+					label += "s"
+				if category == "warnings" and count == 1:
+					label = "warning"
+				parts.append(markup(f"{count} {label}", **{_SUMMARY_COLOURS.get(category, "yellow"): True}))
+		duration = format_session_duration(terminal._session_start.elapsed().seconds)
+		terminal.write_line(markup("Results: ", bold=True) + ", ".join(parts) + f" in {duration}")
+
+	@pytest.hookimpl(wrapper=True, tryfirst=True)
+	def pytest_sessionfinish(self) -> Generator[None]:
+		with _replace_summary(self.terminal, self._summary_stats):
+			yield
 
 
 def _interactive(config: pytest.Config) -> bool:

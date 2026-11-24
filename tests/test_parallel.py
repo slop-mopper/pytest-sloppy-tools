@@ -391,7 +391,7 @@ def test_fresh_workers_replay_selection_and_keep_one_junit_report(tmp_path: Path
 	command = _command("--workers=2", "--output=batched", "--pretty", "--junitxml=report.xml", "--", "test_example.py")
 	result = subprocess.run(command, cwd=tmp_path, env=env, text=True, capture_output=True, timeout=20, check=False)
 	assert result.returncode == 1, result.stdout + result.stderr
-	assert "1 failed, 1 passed, 2 deselected" in result.stdout
+	assert "Results: 1 passed, 1 failed, 2 deselected in " in result.stdout
 	assert "SELECTED=0" in result.stdout and "SELECTED=1" in result.stdout
 	assert (tmp_path / "report.xml").read_text().count("<testcase ") == 2
 	# Last-failed selection depends on the controller cache. Workers must use

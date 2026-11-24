@@ -1,6 +1,7 @@
 # Pretty progress
 
-Use `--pretty` to replace pytest's progress display in serial and parallel runs:
+Use `--pretty` for compact progress, output labels, and a results summary in
+serial and parallel runs:
 
 ```sh
 uv run --no-dev pytest --pretty
@@ -29,8 +30,25 @@ show captured output after each test and display uncaptured output live,
 including pytest's live logs. Enabling live output does not split the row for
 quiet cases.
 
+Output blocks start with the stream and case name, and end with a dim
+`—— end <stream>` line. Consecutive live output from the same case and stream
+shares a block. Parameter labels distinguish named keys from values and
+de-emphasise separators in pytest's hyphenated IDs. For example:
+
+```text
+stderr │ test_counter (width=32; reset=async)
+Simulation failed: exit code 1
+—— end stderr
+```
+
+The summary lists failed cases and a short reason, followed by outcome counts
+and elapsed time. Setup and teardown errors count as failures of the affected
+case, even if its test body passed. Pytest's default tracebacks and repeated
+capture sections are hidden. Use `--tb=short --show-capture=no` to restore
+tracebacks without repeating captured output, or `--tb=long` for more detail.
+`--no-summary` hides the failed-case list while keeping the outcome counts.
+
 Redirected output uses plain lines without cursor movement. Quiet cases are
 grouped on one line per function when progress doesn't need to make room for
-output. Colours follow pytest's `--color` setting. Pytest still prints its
-regular tracebacks and summary. Use `--show-capture=no` to avoid repeating
-captured output in failure details. `--pretty` does not support xdist distribution.
+output. Colours follow pytest's `--color` setting. `--pretty` does not support
+xdist distribution.

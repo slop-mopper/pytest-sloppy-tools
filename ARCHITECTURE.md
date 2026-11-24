@@ -43,11 +43,13 @@ process group so cleanup can also signal its subprocesses.
 
 `--pretty` installs an optional renderer for serial pytest and the parallel
 controller. During the run loop it replaces the terminal reporter's progress
-hooks and keeps pytest's report categories and summary hooks. The renderer
-assigns a slot to each collected item, sizes the percentage column from the
-labels and slot counts, and updates the row after teardown. It ends the
-progress line when there is output to display. The child process never renders
-progress.
+hooks while keeping pytest's report categories. The renderer assigns a slot to
+each collected item, sizes the percentage column from the labels and slot
+counts, and updates the row after teardown. It groups terminal output by item
+and stream, using the collected item's name for the heading. At session finish
+it replaces pytest's terminal summary sections, leaving third-party summary
+hooks and the underlying test reports intact. The child process never renders
+progress or a summary.
 
 Serial runs with `--output` or `--pretty` share the worker stream reader.
 The serial adapter redirects file descriptors per item and writes to the

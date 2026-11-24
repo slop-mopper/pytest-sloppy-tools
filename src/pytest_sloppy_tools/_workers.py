@@ -287,13 +287,13 @@ def _collect(session: pytest.Session, directory: Path, workers: list[_Worker], *
 	terminal = session.config.pluginmanager.get_plugin("terminalreporter")
 	pretty = _get_pretty(session.config)
 
-	def heading(index: int, title: str) -> None:
+	def heading(index: int, stream: str) -> None:
 		if pretty is not None:
-			pretty.heading(index, title)
+			pretty.heading(index, stream)
 			return
 		if terminal is not None:
 			terminal.ensure_newline()
-		write(f"\n{title}\n")
+		write(f"\n--- {session.items[index].nodeid} [{stream}] ---\n")
 
 	def write(text: str) -> None:
 		if terminal is None:
@@ -329,7 +329,7 @@ def _collect(session: pytest.Session, directory: Path, workers: list[_Worker], *
 								_crash(candidate)
 				elif event == "begin":
 					worker.item = session.items[data]
-					worker.output = _Output(directory, data, worker.item.nodeid)
+					worker.output = _Output(directory, data)
 					if pretty is not None:
 						pretty.start(data)
 				elif event == "interrupt":

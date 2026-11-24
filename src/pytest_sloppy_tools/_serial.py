@@ -141,15 +141,15 @@ class _Serial:
 	@contextmanager
 	def _read_output(self, item: pytest.Item, index: int, display: TextIO) -> Generator[None]:
 		assert self.directory is not None
-		output = _Output(self.directory, index, item.nodeid)
+		output = _Output(self.directory, index)
 
-		def heading(index: int, title: str) -> None:
+		def heading(index: int, stream: str) -> None:
 			if self.pretty is not None:
-				self.pretty.heading(index, title)
+				self.pretty.heading(index, stream)
 			else:
 				if self.terminal is not None:
 					self.terminal.ensure_newline()
-				write(f"{title}\n")
+				write(f"--- {item.nodeid} [{stream}] ---\n")
 
 		def write(text: str) -> None:
 			if self.terminal is not None:
@@ -213,7 +213,7 @@ class _Serial:
 						continue
 					if self.capture == "tee-sys" and stream in _STREAMS:
 						continue
-					pretty.heading(index, f"--- {item.nodeid} [{stream}] ---")
+					pretty.heading(index, stream)
 					pretty.terminal.write(text if text.endswith("\n") else text + "\n", flush=True)
 				pretty.finish(index)
 			return result

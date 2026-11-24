@@ -20,9 +20,8 @@ def _stream_path(directory: Path, index: int, stream: str) -> Path:
 
 
 class _Output:
-	def __init__(self, directory: Path, index: int, nodeid: str) -> None:
+	def __init__(self, directory: Path, index: int) -> None:
 		self.index = index
-		self.nodeid = nodeid
 		self.paths = [_stream_path(directory, index, stream) for stream in _STREAMS]
 		self.files: list[BinaryIO] = []
 		self.decoders = [codecs.getincrementaldecoder("utf-8")(errors="replace") for _ in _STREAMS]
@@ -38,7 +37,6 @@ class _Output:
 			size = os.fstat(file.fileno()).st_size - file.tell()
 			if not final:
 				size = min(size, _CHUNK_SIZE)
-			title = f"--- {self.nodeid} [{stream}] ---"
 			last = ""
 			while size:
 				data = file.read(min(size, _CHUNK_SIZE))
@@ -47,12 +45,12 @@ class _Output:
 				size -= len(data)
 				if text := decoder.decode(data):
 					if not last:
-						heading(self.index, title)
+						heading(self.index, stream)
 					write(text)
 					last = text[-1]
 			if final and (tail := decoder.decode(b"", final=True)):
 				if not last:
-					heading(self.index, title)
+					heading(self.index, stream)
 				write(tail)
 				last = tail[-1]
 			if last and last != "\n":
