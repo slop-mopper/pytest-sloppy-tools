@@ -5,6 +5,7 @@
 """Worker lifecycle, output transport, and report relay."""
 
 import io
+import json
 import logging
 import os
 import signal
@@ -16,6 +17,7 @@ from dataclasses import dataclass
 from multiprocessing import Pipe
 from multiprocessing.connection import Connection, wait
 from pathlib import Path
+from subprocess import DEVNULL, Popen
 from tempfile import TemporaryDirectory
 from typing import Never
 from warnings import WarningMessage
@@ -38,11 +40,13 @@ def _flush() -> None:
 	sys.stderr.flush()
 
 
-def _configure_worker(config: pytest.Config, basetemp: Path) -> None:
+def _configure_worker(config: pytest.Config, basetemp: Path | None) -> None:
 	manager = config.pluginmanager
 	terminal = manager.get_plugin("terminalreporter")
 	if terminal is not None:
 		manager.unregister(terminal)
+	if (progress := manager.get_plugin("terminalprogress")) is not None:
+		manager.unregister(progress)
 	if (pretty := _get_pretty(config)) is not None:
 		manager.unregister(pretty)
 
@@ -56,7 +60,7 @@ def _configure_worker(config: pytest.Config, basetemp: Path) -> None:
 		worker_capture.start_global_capturing()
 		manager.register(worker_capture, "capturemanager")
 
-	if (factory := getattr(config, "_tmp_path_factory", None)) is not None:
+	if basetemp is not None and (factory := getattr(config, "_tmp_path_factory", None)) is not None:
 		basetemp.mkdir(mode=0o700)
 		factory._basetemp = basetemp
 
@@ -107,7 +111,7 @@ class _WorkerReports:
 			sys.stderr.write(warning_record_to_str(warning_message))
 
 
-def _work(session: pytest.Session, queue: range, channel: Connection, directory: Path, basetemp: Path) -> None:
+def _work(session: pytest.Session, queue: range, channel: Connection, directory: Path, basetemp: Path | None) -> None:
 	_configure_worker(session.config, basetemp)
 	session.config.pluginmanager.register(_WorkerReports(channel, session.config))
 	for position, index in enumerate(queue):
@@ -138,6 +142,14 @@ class _Worker:
 	item: pytest.Item | None = None
 	output: _Output | None = None
 	stopping: bool = False
+	process: Popen[bytes] | None = None
+	startup_log: Path | None = None
+	queue: range | None = None
+
+	def reap(self) -> int:
+		if self.process is not None:
+			return self.process.wait()
+		return os.waitstatus_to_exitcode(os.waitpid(self.pid, 0)[1])
 
 
 def _spawn(session: pytest.Session, queue: range, directory: Path, basetemp: Path, workers: list[_Worker]) -> None:
@@ -169,6 +181,48 @@ def _spawn(session: pytest.Session, queue: range, directory: Path, basetemp: Pat
 	child.close()
 
 
+def _spawn_fresh(config: pytest.Config, queue: range, directory: Path, basetemp: Path, workers: list[_Worker]) -> None:
+	number = len(workers)
+	log = directory / f"startup-{number}.log"
+	cache_dir = directory / f"cache-{number}"
+	# Seed pytest's collection-order options without letting workers write
+	# to the controller's cache. Cache values set by tests are worker-local.
+	if (cache := getattr(config, "cache", None)) is not None:
+		values = cache_dir / "v" / "cache"
+		values.mkdir(parents=True)
+		for key in ("lastfailed", "nodeids"):
+			value = cache.get(f"cache/{key}", None)
+			if value is not None:
+				(values / key).write_text(json.dumps(value), encoding="utf-8")
+
+	invocation = config.invocation_params
+	args = list(invocation.args)
+	end = args.index("--") if "--" in args else len(args)
+	args[end:end] = [f"--basetemp={basetemp}", "-o", f"cache_dir={cache_dir}"]
+	parent, child = Pipe()
+	try:
+		with log.open("wb") as output:
+			process = Popen(
+				[sys.executable, "-m", "pytest_sloppy_tools._fresh", str(child.fileno())],
+				cwd=invocation.dir,
+				stdin=DEVNULL,
+				stdout=output,
+				stderr=output,
+				pass_fds=(child.fileno(),),
+				start_new_session=True,
+			)
+	except BaseException:
+		parent.close()
+		raise
+	finally:
+		child.close()
+	workers.append(_Worker(process.pid, parent, process=process, startup_log=log, queue=queue))
+	try:
+		parent.send((args, invocation.plugins or (), directory))
+	except (EOFError, ConnectionError):
+		_crash(workers[-1])
+
+
 def _abort(workers: list[_Worker]) -> None:
 	if not workers:
 		return
@@ -185,12 +239,21 @@ def _abort(workers: list[_Worker]) -> None:
 		if sig == signal.SIGTERM:
 			time.sleep(0.1)
 	for worker in workers:
-		os.waitpid(worker.pid, 0)
+		worker.reap()
 		worker.channel.close()
 
 
 def _worker_status(worker: _Worker) -> os.waitid_result | None:
 	return os.waitid(os.P_PID, worker.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+
+
+def _startup_detail(worker: _Worker) -> str:
+	if worker.startup_log is None:
+		return ""
+	with worker.startup_log.open("rb") as log:
+		log.seek(max(0, os.fstat(log.fileno()).st_size - 4096))
+		text = log.read(4096).decode("utf-8", errors="replace").strip()
+	return f"\nWorker startup or shutdown output:\n{text}" if text else ""
 
 
 def _crash(worker: _Worker) -> Never:
@@ -200,7 +263,23 @@ def _crash(worker: _Worker) -> Never:
 		reason = "exit status" if status.si_code == os.CLD_EXITED else "signal"
 		detail = f" ({reason} {status.si_status})"
 	pytest.exit(
-		f"parallel worker {worker.pid} exited before finishing its tests{detail}", pytest.ExitCode.INTERNAL_ERROR
+		f"parallel worker {worker.pid} exited before finishing its tests{detail}{_startup_detail(worker)}",
+		pytest.ExitCode.INTERNAL_ERROR,
+	)
+
+
+def _check_collection(expected: list[str], actual: list[str], worker: _Worker) -> None:
+	for position, (left, right) in enumerate(zip(expected, actual)):
+		if left != right:
+			detail = f"item {position + 1}: controller collected {left!r}, worker collected {right!r}"
+			break
+	else:
+		if len(expected) == len(actual):
+			return
+		detail = f"controller collected {len(expected)} items, worker collected {len(actual)}"
+	pytest.exit(
+		f"fresh worker {worker.pid} collected different tests ({detail})",
+		pytest.ExitCode.INTERNAL_ERROR,
 	)
 
 
@@ -222,6 +301,8 @@ def _collect(session: pytest.Session, directory: Path, workers: list[_Worker], *
 		else:
 			terminal.write(text, flush=True)
 
+	pending = {worker.pid for worker in workers if worker.queue is not None}
+	expected = [item.nodeid for item in session.items] if pending else []
 	try:
 		while workers:
 			ready = wait([worker.channel for worker in workers], timeout=0.05 if live else 0.1)
@@ -237,7 +318,16 @@ def _collect(session: pytest.Session, directory: Path, workers: list[_Worker], *
 					event, data = worker.channel.recv()
 				except (EOFError, ConnectionError):
 					_crash(worker)
-				if event == "begin":
+				if event == "collected":
+					_check_collection(expected, data, worker)
+					pending.remove(worker.pid)
+					if not pending:
+						for candidate in workers:
+							try:
+								candidate.channel.send(candidate.queue)
+							except (EOFError, ConnectionError):
+								_crash(candidate)
+				elif event == "begin":
 					worker.item = session.items[data]
 					worker.output = _Output(directory, data, worker.item.nodeid)
 					if pretty is not None:
@@ -247,7 +337,10 @@ def _collect(session: pytest.Session, directory: Path, workers: list[_Worker], *
 				elif event == "exit":
 					pytest.exit(data[0], data[1])
 				elif event == "error":
-					pytest.exit(f"parallel worker {worker.pid} failed:\n{data}", pytest.ExitCode.INTERNAL_ERROR)
+					pytest.exit(
+						f"parallel worker {worker.pid} failed:\n{data}{_startup_detail(worker)}",
+						pytest.ExitCode.INTERNAL_ERROR,
+					)
 				else:
 					assert worker.item is not None and worker.output is not None
 					hook = worker.item.ihook
@@ -279,12 +372,12 @@ def _collect(session: pytest.Session, directory: Path, workers: list[_Worker], *
 							worker.output.close()
 							worker.output = worker.item = None
 							if worker.stopping:
-								_, status = os.waitpid(worker.pid, 0)
+								status = worker.reap()
 								worker.channel.close()
 								workers.remove(worker)
 								if status:
 									pytest.exit(
-										f"parallel worker {worker.pid} failed during shutdown",
+										f"parallel worker {worker.pid} failed during shutdown{_startup_detail(worker)}",
 										pytest.ExitCode.INTERNAL_ERROR,
 									)
 				if live and worker.output is not None:
@@ -305,13 +398,19 @@ def _run(session: pytest.Session, count: int, *, live: bool) -> None:
 		raise pytest.UsageError("--workers requires /proc")
 	threads = [thread.name for thread in threading.enumerate() if thread is not threading.current_thread()]
 	tasks = len(os.listdir("/proc/self/task"))
-	if threads or tasks != 1:
-		detail = f"; Python threads: {', '.join(threads)}" if threads else "; no Python thread names available"
-		raise pytest.UsageError(
-			f"--workers cannot safely fork after collection ({tasks} OS threads{detail}). "
-			"A test import or plugin may have started a thread. Defer that initialisation to a fixture, "
-			"disable the plugin if it is not needed, or run without --workers."
-		)
+	fresh = bool(threads or tasks != 1)
+	if fresh:
+		config = session.config
+		if any(not isinstance(plugin, str) for plugin in config.invocation_params.plugins or ()):
+			raise pytest.UsageError(
+				"fresh workers cannot replay pytest.main() plugins passed as objects; use importable plugin names"
+			)
+		if config.getoption("debug", False):
+			raise pytest.UsageError("fresh workers cannot share a pytest debug file; rerun without --debug")
+		if terminal := config.pluginmanager.get_plugin("terminalreporter"):
+			detail = f"; Python threads: {', '.join(threads)}" if threads else ""
+			terminal.ensure_newline()
+			terminal.write_line(f"Starting fresh workers ({tasks} OS threads{detail}); each worker repeats collection.")
 	_flush()
 	with TemporaryDirectory(prefix="pytest-sloppy-") as path:
 		directory = Path(path)
@@ -320,7 +419,11 @@ def _run(session: pytest.Session, count: int, *, live: bool) -> None:
 		workers: list[_Worker] = []
 		try:
 			for number, queue in enumerate(_item_queues(len(session.items), min(count, len(session.items)))):
-				_spawn(session, queue, directory, basetemp / f"sloppy-{number}", workers)
+				worker_temp = basetemp / f"sloppy-{number}"
+				if fresh:
+					_spawn_fresh(session.config, queue, directory, worker_temp, workers)
+				else:
+					_spawn(session, queue, directory, worker_temp, workers)
 		except BaseException:
 			_abort(workers)
 			raise

@@ -1,9 +1,10 @@
 # Parallel execution
 
-Parallel execution requires **Linux** with `/proc` available. The plugin collects
-tests once, then forks worker processes from the collected session. Running pytest
-without the plugin's options leaves its normal execution and capture settings
-unchanged.
+Parallel execution requires **Linux** with `/proc` available. If only one thread
+is running after collection, the plugin forks workers from the collected
+session. If extra threads are present, it starts fresh Python interpreters.
+Running pytest without the plugin's options leaves its normal execution and
+capture settings unchanged.
 
 ```sh
 uv run --no-dev pytest --workers=4 --output=live --log-cli-level=INFO
@@ -52,14 +53,28 @@ Use pytest's `tmp_path` fixture for per-test cocotb build directories, or use
 parallel tests write to the same build or result directory. Wait for any
 subprocesses the test starts before it ends so their output reaches the terminal.
 
-## Limitations
+## Fresh workers
 
-If a test import or plugin has already started a background thread when
-collection finishes, `--workers` stops instead of forking. A forked worker
-could inherit a lock held by a thread that no longer exists and hang. The error
-reports the OS thread count and names any Python threads it can see. Defer
-thread-starting code to a fixture, disable the plugin if you do not need it,
-or use serial `--output` without `--workers`.
+A test import or plugin can start background threads during collection, including
+native threads from NumPy or SciPy. Forking at this point can leave a worker
+waiting on a lock from a thread it did not inherit. `--workers` automatically
+starts fresh interpreters instead and prints one notice with the thread count.
+It does not change your environment's BLAS thread settings. If workers compete
+for CPU time, adjust the worker count or your BLAS thread budget.
+
+Each fresh worker repeats collection before any tests run. This can increase
+startup time. Test imports and collection hooks must tolerate running in several
+processes, and all workers must collect the same node IDs in the same order.
+The run stops before executing tests if that check fails. Fresh workers use
+separate caches and temporary directories. The controller writes JUnit XML;
+fresh workers stream their logs to the terminal and do not write to the
+controller's pytest log file.
+
+Fresh workers replay the original pytest arguments and plugin configuration.
+Plugins passed as objects to `pytest.main()` and pytest's `--debug` file are not
+supported with this fallback. Use importable plugin names and leave off `--debug`.
+
+## Limitations
 
 Tests that require interactive input, pytest's interactive debugger, or xdist
 distribution must run separately. Plugins that depend on all test hooks and

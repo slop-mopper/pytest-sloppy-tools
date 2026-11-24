@@ -6,8 +6,17 @@ The development dependency group includes cocotb for the NVC integration test.
 
 The `pytest11` entry point registers a small, opt-in plugin. Serial runs use
 pytest's own run loop. The parallel run loop starts after collection and
-deselection finish, and forks the collected session on Linux. Workers each run an
-ordered queue of item indices through pytest's test protocol. The queue builder
+deselection finish. On Linux, the controller forks the collected session when
+only one thread is present. If Python or `/proc` reports additional threads, the
+controller launches fresh interpreters with the original pytest arguments.
+Each interpreter collects independently and sends its ordered node IDs to
+the controller. Queues are released only after every worker's list matches.
+Fresh workers get separate base temporary directories and copies of pytest's
+cached collection-order data. Only the controller writes JUnit XML or its
+configured pytest log file.
+
+Both launchers run an ordered queue of item indices through pytest's test
+protocol in each worker. The queue builder
 contains the round-robin scheduling policy; worker execution does not depend
 on the policy. Each worker passes its actual next item to pytest so the fixture
 manager can reuse broader-scoped fixtures in that process. Each worker uses a

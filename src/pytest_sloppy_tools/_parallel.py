@@ -10,6 +10,9 @@ from argparse import ArgumentTypeError
 import pytest
 
 
+_FRESH_WORKER = pytest.StashKey[bool]()
+
+
 def _worker_count(value: str) -> int:
 	try:
 		count = int(value)
@@ -38,6 +41,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 @pytest.hookimpl(trylast=True)
 def pytest_configure(config: pytest.Config) -> None:
+	if config.stash.get(_FRESH_WORKER, False):
+		return
 	count = config.getoption("workers")
 	output = config.getoption("output")
 	xdist = config.getoption("numprocesses", 0) or config.getoption("dist", "no") != "no"
@@ -71,7 +76,7 @@ def pytest_configure(config: pytest.Config) -> None:
 def pytest_runtestloop(session: pytest.Session) -> bool | None:
 	config = session.config
 	count = config.getoption("workers")
-	if count is None or config.option.collectonly or not session.items:
+	if config.stash.get(_FRESH_WORKER, False) or count is None or config.option.collectonly or not session.items:
 		return None
 	if session.testsfailed and not config.option.continue_on_collection_errors:
 		# Let pytest report collection failures.

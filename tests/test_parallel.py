@@ -35,8 +35,23 @@ def _pytest(directory: Path, *args: str) -> subprocess.CompletedProcess[str]:
 	)
 
 
+@pytest.fixture(params=[False, True], ids=["fork", "fresh"])
+def fresh_workers(tmp_path: Path, request: pytest.FixtureRequest) -> bool:
+	if request.param:
+		_write(
+			tmp_path,
+			"""
+			from threading import Event, Thread
+
+			Thread(target=Event().wait, name="example-collection-thread", daemon=True).start()
+			""",
+			"conftest.py",
+		)
+	return request.param
+
+
 @pytest.mark.parametrize("mode", ["live", "batched"])
-def test_parallel_cases_and_output(tmp_path: Path, mode: str) -> None:
+def test_parallel_cases_and_output(tmp_path: Path, mode: str, fresh_workers: bool) -> None:
 	_write(
 		tmp_path,
 		"""
@@ -84,7 +99,12 @@ def test_parallel_cases_and_output(tmp_path: Path, mode: str) -> None:
 	)
 	result = _pytest(tmp_path, "--workers=2", f"--output={mode}", "--log-cli-level=INFO", "--basetemp=test-tmp")
 	assert result.returncode == 0, result.stdout + result.stderr
-	assert (tmp_path / "collected").read_text() == "one collection\n"
+	assert (tmp_path / "collected").read_text() == "one collection\n" * (3 if fresh_workers else 1)
+	if fresh_workers:
+		assert result.stdout.count("Starting fresh workers") == 1
+		assert "2 OS threads; Python threads: example-collection-thread" in result.stdout
+	else:
+		assert "Starting fresh workers" not in result.stdout
 	assert "6 passed" in result.stdout
 	assert result.stderr == ""
 	assert len(set(re.findall(r"CASE \d+ PID (\d+)", result.stdout))) == 2
@@ -183,6 +203,7 @@ def test_fixture_capture_and_pytest_outcomes(tmp_path: Path, worker_options: tup
 	assert (tmp_path / "report.xml").read_text().count("<testcase ") == 5
 
 
+@pytest.mark.usefixtures("fresh_workers")
 def test_maxfail_runs_fixture_finalisers(tmp_path: Path) -> None:
 	_write(
 		tmp_path,
@@ -219,6 +240,7 @@ def test_maxfail_runs_fixture_finalisers(tmp_path: Path) -> None:
 	assert "UNEXPECTED TEST" not in result.stdout
 
 
+@pytest.mark.usefixtures("fresh_workers")
 def test_worker_crash_is_reported_with_output(tmp_path: Path) -> None:
 	_write(
 		tmp_path,
@@ -236,6 +258,7 @@ def test_worker_crash_is_reported_with_output(tmp_path: Path) -> None:
 	assert "exited before finishing its tests" in result.stdout + result.stderr
 
 
+@pytest.mark.usefixtures("fresh_workers")
 def test_ctrl_c_reaps_worker(tmp_path: Path) -> None:
 	_write(
 		tmp_path,
@@ -299,22 +322,83 @@ def test_invalid_options(tmp_path: Path, options: list[str], message: str) -> No
 	assert message in result.stderr
 
 
-def test_workers_report_collection_threads(tmp_path: Path) -> None:
+def test_fresh_workers_verify_order_before_running(tmp_path: Path) -> None:
+	_write(
+		tmp_path,
+		"""
+		from pathlib import Path
+
+		def test_a():
+		    Path("ran").touch()
+
+		def test_b():
+		    Path("ran").touch()
+		""",
+	)
+	_write(
+		tmp_path,
+		"""
+		from pathlib import Path
+		from threading import Event, Thread
+
+		Thread(target=Event().wait, daemon=True).start()
+
+		def pytest_collection_modifyitems(items):
+		    marker = Path("collected")
+		    if marker.exists():
+		        items.reverse()
+		    marker.touch()
+		""",
+		"conftest.py",
+	)
+	result = _pytest(tmp_path, "--workers=2", "--output=batched")
+	assert result.returncode == 3, result.stdout + result.stderr
+	assert "collected different tests" in result.stdout + result.stderr
+	assert "controller collected 'test_example.py::test_a', worker collected 'test_example.py::test_b'" in (
+		result.stdout + result.stderr
+	)
+	assert not (tmp_path / "ran").exists()
+
+
+def test_fresh_workers_replay_selection_and_keep_one_junit_report(tmp_path: Path) -> None:
+	_write(tmp_path, "[pytest]\naddopts = -m keep\nmarkers = keep: selected tests\n", "pytest.ini")
 	_write(
 		tmp_path,
 		"""
 		from threading import Event, Thread
 
-		Thread(target=Event().wait, name="example-collection-thread", daemon=True).start()
+		import pytest
 
-		def test_example():
-		    pass
+		Thread(target=Event().wait, daemon=True).start()
+
+		@pytest.mark.keep
+		@pytest.mark.parametrize("case", [0, 1])
+		def test_selected(case):
+		    print(f"SELECTED={case}")
+		    assert case == 0
+
+		@pytest.mark.keep
+		def test_filtered():
+		    pytest.fail("filtered by keyword")
+
+		def test_selected_without_marker():
+		    pytest.fail("filtered by marker")
 		""",
 	)
-	result = _pytest(tmp_path, "--workers=2", "--output=batched")
-	assert result.returncode == 4, result.stdout + result.stderr
-	assert "cannot safely fork after collection" in result.stderr
-	assert "example-collection-thread" in result.stderr
-	assert "OS threads" in result.stderr
-	result = _pytest(tmp_path, "--output=batched")
-	assert result.returncode == 0, result.stdout + result.stderr
+	# Keep the in-repo cache, CLI selection, and the config/env addopts path in
+	# the replay. No extra options are passed through after the positional "--".
+	env = {**_env(), "PYTEST_ADDOPTS": "-k selected"}
+	command = _command("--workers=2", "--output=batched", "--pretty", "--junitxml=report.xml", "--", "test_example.py")
+	result = subprocess.run(command, cwd=tmp_path, env=env, text=True, capture_output=True, timeout=20, check=False)
+	assert result.returncode == 1, result.stdout + result.stderr
+	assert "1 failed, 1 passed, 2 deselected" in result.stdout
+	assert "SELECTED=0" in result.stdout and "SELECTED=1" in result.stdout
+	assert (tmp_path / "report.xml").read_text().count("<testcase ") == 2
+	# Last-failed selection depends on the controller cache. Workers must use
+	# the same starting state and must not replace that cache at shutdown.
+	command = _command("--workers=2", "--output=batched", "--lf", "--", "test_example.py")
+	result = subprocess.run(command, cwd=tmp_path, env=env, text=True, capture_output=True, timeout=20, check=False)
+	assert result.returncode == 1, result.stdout + result.stderr
+	assert "Starting fresh workers" in result.stdout
+	assert "1 failed, 3 deselected" in result.stdout
+	assert "SELECTED=0" not in result.stdout
