@@ -20,5 +20,6 @@ Each parametrised case is scheduled separately. Output is labelled with its test
 ID and stream, including output from subprocesses that inherit stdout and stderr.
 Omit both options to run pytest normally.
 
-See the [parallel execution guide](docs/parallel.md) for logging, fixtures, and
-simulator build-directory isolation.
+Add [`--pretty`](docs/pretty.md) for compact, coloured progress in serial or
+parallel runs. See the [parallel execution guide](docs/parallel.md) for logging,
+fixtures, and simulator build-directory isolation.

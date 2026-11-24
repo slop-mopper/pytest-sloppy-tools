@@ -1,0 +1,242 @@
+# test_pretty.py
+# SPDX-License-Identifier: CC0-1.0
+# This file was created by an AI model: openai/gpt-6.2-sol
+
+import errno
+import os
+import re
+import select
+import subprocess
+import sys
+import time
+from pathlib import Path
+from textwrap import dedent
+
+import pytest
+
+
+def _command(*options: str) -> list[str]:
+	return [sys.executable, "-m", "pytest", "-p", "sloppy_tools", "-q", "--pretty", *options]
+
+
+def _env() -> dict[str, str]:
+	return {
+		**os.environ,
+		"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+		"PYTEST_ADDOPTS": "",
+		"PYTEST_PLUGINS": "",
+		"COLUMNS": "80",
+	}
+
+
+def _run(directory: Path, *options: str) -> subprocess.CompletedProcess[str]:
+	return subprocess.run(
+		_command(*options), cwd=directory, env=_env(), text=True, capture_output=True, timeout=20, check=False
+	)
+
+
+def _write(directory: Path, source: str, name: str = "test_example.py") -> None:
+	(directory / name).write_text(dedent(source), encoding="utf-8")
+
+
+@pytest.mark.parametrize("mode", ["serial", "batched", "live"])
+def test_pretty_groups_cases_and_reprints_after_output(tmp_path: Path, mode: str) -> None:
+	if mode != "serial" and sys.platform != "linux":
+		pytest.skip("parallel runner requires Linux")
+	_write(
+		tmp_path,
+		"""
+		import os
+		import pytest
+
+		@pytest.mark.parametrize("case", [0, 1, 2, 3])
+		def test_sim(case):
+		    if case == 2:
+		        os.write(2, b"simulation trace\\n")
+		        assert False, "simulation failed"
+		    if case == 3:
+		        pytest.skip("simulator unavailable")
+		""",
+	)
+	_write(
+		tmp_path,
+		"""
+		def pytest_terminal_summary(terminalreporter):
+		    terminalreporter.write_line("CUSTOM SUMMARY")
+		""",
+		"conftest.py",
+	)
+	workers = [] if mode == "serial" else ["--workers=1", f"--output={mode}"]
+	result = _run(tmp_path, "-v", "--color=yes", "--show-capture=no", *workers)
+	assert result.returncode == 1, result.stdout + result.stderr
+	progress, summary = result.stdout.split("CUSTOM SUMMARY", 1)
+	rows = [line for line in progress.splitlines() if line.startswith("test_sim ")]
+	passed = "\x1b[32m·\x1b[0m"
+	dimmed = "\x1b[2m·\x1b[0m"
+	failed = "\x1b[31m×\x1b[0m"
+	skipped = "\x1b[33ms\x1b[0m"
+	assert len(rows) == 3
+	assert passed * 2 in rows[0] and rows[0].endswith("50%")
+	assert dimmed * 2 + failed in rows[1] and rows[1].endswith("75%")
+	assert dimmed * 2 + "\x1b[2m×\x1b[0m" + skipped in rows[2] and rows[2].endswith("100%")
+	assert progress.index(rows[0]) < progress.index("simulation trace\n") < progress.index(rows[1])
+	assert progress.count("simulation trace\n") == 1
+	assert "PASSED" not in progress
+	assert "1 failed, 2 passed, 1 skipped" in re.sub(r"\x1b\[[0-9;]*m", "", summary)
+
+
+def test_pretty_serial_uncaptured_output(tmp_path: Path) -> None:
+	_write(
+		tmp_path,
+		"""
+		import os
+		import pytest
+
+		@pytest.mark.parametrize("case", [0, 1])
+		def test_sim(case):
+		    if case == 1:
+		        os.write(1, b"native output without newline")
+		""",
+	)
+	result = _run(tmp_path, "-s", "--color=no")
+	assert result.returncode == 0, result.stdout + result.stderr
+	assert re.search(
+		r"^test_sim  · +50%\nnative output without newline\ntest_sim  ·· +100%$", result.stdout, re.MULTILINE
+	)
+	assert "\x1b" not in result.stdout
+
+
+def test_pretty_phase_outcomes_and_disambiguation(tmp_path: Path) -> None:
+	_write(
+		tmp_path,
+		"""
+		import pytest
+
+		@pytest.fixture
+		def cleanup():
+		    yield
+		    raise ValueError("teardown error")
+
+		def test_sim(cleanup):
+		    pass
+
+		@pytest.mark.skip(reason="setup skip")
+		def test_skip():
+		    assert False
+		""",
+		"test_a.py",
+	)
+	_write(tmp_path, "def test_sim(): pass\n", "test_b.py")
+	result = _run(tmp_path, "--color=no")
+	assert result.returncode == 1, result.stdout + result.stderr
+	rows = [
+		line for line in result.stdout.splitlines() if line.startswith(("test_a.py::", "test_skip ", "test_b.py::"))
+	]
+	width = len("test_a.py::test_sim  ×") + 12 + 4
+	assert rows == [
+		f"{'test_a.py::test_sim  ×':<{width - 4}} 33%",
+		f"{'test_skip  s':<{width - 4}} 66%",
+		f"{'test_b.py::test_sim  ·':<{width - 4}}100%",
+	]
+	assert "ValueError: teardown error" in result.stdout
+	assert "2 passed, 1 skipped, 1 error" in result.stdout
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="parallel runner requires Linux")
+def test_pretty_parallel_uses_collection_order(tmp_path: Path) -> None:
+	_write(
+		tmp_path,
+		"""
+		import time
+		from pathlib import Path
+
+		import pytest
+
+		@pytest.mark.parametrize("case", [0, 1, 2, 3])
+		def test_sim(case):
+		    if case == 0:
+		        deadline = time.monotonic() + 5
+		        while not Path("worker_one_finished").exists():
+		            assert time.monotonic() < deadline
+		            time.sleep(0.01)
+		    if case == 3:
+		        Path("worker_one_finished").touch()
+		    if case == 1:
+		        pytest.skip("second case skipped")
+		""",
+	)
+	result = _run(tmp_path, "--workers=2", "--output=batched", "--color=no")
+	assert result.returncode == 0, result.stdout + result.stderr
+	assert re.findall(r"^test_sim  (.*?) +(\d+%)$", result.stdout, re.MULTILINE) == [("·s··", "100%")]
+
+
+def _run_terminal(directory: Path, *options: str) -> str:
+	master, slave = os.openpty()
+	try:
+		with subprocess.Popen(
+			_command("--color=no", *options), cwd=directory, env=_env(), stdout=slave, stderr=subprocess.STDOUT
+		) as process:
+			try:
+				os.close(slave)
+				slave = -1
+				deadline = time.monotonic() + 10
+				output = bytearray()
+				while True:
+					assert select.select([master], [], [], max(0, deadline - time.monotonic()))[0], output
+					try:
+						output.extend(os.read(master, 8192))
+					except OSError as exc:
+						if exc.errno != errno.EIO:
+							raise
+						break
+				assert process.wait(timeout=2) == 0, output
+			finally:
+				if process.poll() is None:
+					process.kill()
+	finally:
+		os.close(master)
+		if slave != -1:
+			os.close(slave)
+	return output.decode()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires a Linux pseudo-terminal")
+def test_pretty_quiet_cases_update_one_terminal_row(tmp_path: Path) -> None:
+	_write(
+		tmp_path,
+		"""
+		import pytest
+
+		@pytest.mark.parametrize("case", [0, 1, 2])
+		def test_sim(case):
+		    pass
+		""",
+	)
+	transcript = _run_terminal(tmp_path)
+	(row,) = [line for line in transcript.split("\r\n") if line.startswith("test_sim ")]
+	updates = row.split("\r")
+	assert [len(update) for update in updates] == [len("test_sim  ···") + 12 + 4] * 4
+	assert re.findall(r"test_sim  (·*) +(\d+%)", row) == [("", "0%"), ("·", "33%"), ("··", "66%"), ("···", "100%")]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires a Linux pseudo-terminal")
+@pytest.mark.parametrize("mode", ["serial", "batched", "live"])
+def test_pretty_terminal_output_starts_after_progress_row(tmp_path: Path, mode: str) -> None:
+	_write(
+		tmp_path,
+		"""
+		import os
+
+		def test_sim(capfd):
+		    with capfd.disabled():
+		        os.write(1, b"native output without newline")
+		    print("captured Python output")
+		""",
+	)
+	workers = [] if mode == "serial" else ["--workers=1", f"--output={mode}"]
+	transcript = _run_terminal(tmp_path, *workers)
+	assert re.search(
+		r"test_sim +0%\r\n(?:--- test_example.py::test_sim \[stdout\] ---\r\n)?native output without newline",
+		transcript,
+	)
+	assert re.search(r"\r\ntest_sim  · {12}100%\r\n", transcript)

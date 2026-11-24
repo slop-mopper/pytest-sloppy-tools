@@ -31,3 +31,12 @@ to the worker's stderr.
 The controller monitors the connections and child process status. A failed or
 interrupted run stops and reaps the remaining workers. Each worker has its own
 process group so cleanup can also signal its subprocesses.
+
+`--pretty` installs an optional renderer for serial pytest and the parallel
+controller. During the run loop it replaces the terminal reporter's progress
+hooks and keeps pytest's report categories and summary hooks. The renderer
+assigns a slot to each collected item, sizes the percentage column from the
+labels and slot counts, and updates the row after teardown. In serial runs it
+displays pytest's capture sections and ends the progress line before a capture
+fixture sends output to the terminal. With workers it draws around the
+controller's stream output. The child process never renders progress.

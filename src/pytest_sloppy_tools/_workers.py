@@ -26,6 +26,8 @@ import pytest
 from _pytest.capture import CaptureManager
 from _pytest.warnings import warning_record_to_str
 
+from ._pretty import _get_pretty
+
 
 _STREAMS = ("stdout", "stderr")
 _CHUNK_SIZE = 64 * 1024
@@ -50,6 +52,8 @@ def _configure_worker(config: pytest.Config, basetemp: Path) -> None:
 	terminal = manager.get_plugin("terminalreporter")
 	if terminal is not None:
 		manager.unregister(terminal)
+	if (pretty := _get_pretty(config)) is not None:
+		manager.unregister(pretty)
 
 	# Disable global capture in the child only. The new capture manager still
 	# activates capsys and capfd when tests request them.
@@ -92,7 +96,7 @@ def _configure_worker(config: pytest.Config, basetemp: Path) -> None:
 	root.setLevel(min(root.level, level))
 
 
-@dataclass
+@dataclass(eq=False)
 class _WorkerReports:
 	channel: Connection
 	config: pytest.Config
@@ -138,6 +142,7 @@ def _work(session: pytest.Session, queue: range, channel: Connection, directory:
 
 class _Output:
 	def __init__(self, directory: Path, index: int, nodeid: str) -> None:
+		self.index = index
 		self.nodeid = nodeid
 		self.paths = [_stream_path(directory, index, stream) for stream in _STREAMS]
 		self.files: list[BinaryIO] = []
@@ -149,7 +154,7 @@ class _Output:
 			self.close()
 			raise
 
-	def show(self, heading: Callable[[str], None], write: Callable[[str], None], *, final: bool) -> None:
+	def show(self, heading: Callable[[int, str], None], write: Callable[[str], None], *, final: bool) -> None:
 		for stream, file, decoder in zip(_STREAMS, self.files, self.decoders, strict=True):
 			size = os.fstat(file.fileno()).st_size - file.tell()
 			if not final:
@@ -163,12 +168,12 @@ class _Output:
 				size -= len(data)
 				if text := decoder.decode(data):
 					if not last:
-						heading(title)
+						heading(self.index, title)
 					write(text)
 					last = text[-1]
 			if final and (tail := decoder.decode(b"", final=True)):
 				if not last:
-					heading(title)
+					heading(self.index, title)
 				write(tail)
 				last = tail[-1]
 			if last and last != "\n":
@@ -256,8 +261,12 @@ def _crash(worker: _Worker) -> Never:
 
 def _collect(session: pytest.Session, directory: Path, workers: list[_Worker], *, live: bool) -> None:
 	terminal = session.config.pluginmanager.get_plugin("terminalreporter")
+	pretty = _get_pretty(session.config)
 
-	def heading(title: str) -> None:
+	def heading(index: int, title: str) -> None:
+		if pretty is not None:
+			pretty.heading(index, title)
+			return
 		if terminal is not None:
 			terminal.ensure_newline()
 		write(f"\n{title}\n")
@@ -286,6 +295,8 @@ def _collect(session: pytest.Session, directory: Path, workers: list[_Worker], *
 				if event == "begin":
 					worker.item = session.items[data]
 					worker.output = _Output(directory, data, worker.item.nodeid)
+					if pretty is not None:
+						pretty.start(data)
 				elif event == "interrupt":
 					raise KeyboardInterrupt
 				elif event == "exit":
@@ -303,6 +314,8 @@ def _collect(session: pytest.Session, directory: Path, workers: list[_Worker], *
 							report = config.hook.pytest_report_from_serializable(config=config, data=data)
 							assert isinstance(report, pytest.TestReport)
 							hook.pytest_runtest_logreport(report=report)
+							if pretty is not None:
+								pretty.report(worker.output.index, report)
 						case "logfinish":
 							hook.pytest_runtest_logfinish(nodeid=data[0], location=data[1])
 						case "decision":
@@ -316,6 +329,8 @@ def _collect(session: pytest.Session, directory: Path, workers: list[_Worker], *
 								_crash(worker)
 						case "end":
 							worker.output.show(heading, write, final=True)
+							if pretty is not None:
+								pretty.finish(worker.output.index)
 							worker.output.close()
 							worker.output = worker.item = None
 							if worker.stopping:

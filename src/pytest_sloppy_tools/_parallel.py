@@ -33,11 +33,20 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 		choices=("live", "batched"),
 		help="display worker output live or after each test (required with --workers)",
 	)
+	group.addoption("--pretty", action="store_true", help="show compact, grouped test progress")
 
 
+@pytest.hookimpl(trylast=True)
 def pytest_configure(config: pytest.Config) -> None:
 	count = config.getoption("workers")
 	output = config.getoption("output")
+	xdist = config.getoption("numprocesses", 0) or config.getoption("dist", "no") != "no"
+	if config.getoption("pretty") and not config.option.collectonly:
+		if xdist or config.getoption("distload", False):
+			raise pytest.UsageError("--pretty cannot be combined with xdist distribution")
+		from ._pretty import _install
+
+		_install(config, parallel=count is not None)
 	if count is None:
 		if output is not None:
 			raise pytest.UsageError("--output requires --workers")
@@ -46,7 +55,7 @@ def pytest_configure(config: pytest.Config) -> None:
 		return
 	if sys.platform != "linux":
 		raise pytest.UsageError("--workers is supported only on Linux")
-	if config.getoption("numprocesses", 0) or config.getoption("dist", "no") != "no":
+	if xdist:
 		raise pytest.UsageError("--workers cannot be combined with xdist distribution")
 	if config.getoption("usepdb") or config.getoption("trace"):
 		raise pytest.UsageError("--workers does not support interactive debugging")

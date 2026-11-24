@@ -6,4 +6,5 @@ Helpers and fixtures for pytest workflows.
 :maxdepth: 2
 
 parallel
+pretty
 ```
