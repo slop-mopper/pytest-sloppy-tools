@@ -5,6 +5,7 @@
 import shutil
 import subprocess
 import sys
+from importlib.util import find_spec
 from pathlib import Path
 from textwrap import dedent
 
@@ -13,6 +14,8 @@ import pytest
 
 @pytest.mark.skipif(sys.platform != "linux" or shutil.which("nvc") is None, reason="requires Linux and NVC")
 def test_parallel_nvc_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+	if find_spec("cocotb") is None:
+		pytest.skip("requires cocotb")
 	(tmp_path / "top.vhd").write_text(
 		dedent("""\
 		entity top is

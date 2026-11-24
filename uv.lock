@@ -491,12 +491,17 @@ name = "pytest-sloppy-tools"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "cocotb" },
     { name = "pytest" },
+]
+
+[package.optional-dependencies]
+cocotb = [
+    { name = "cocotb" },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "cocotb" },
     { name = "pyrefly" },
     { name = "ruff" },
 ]
@@ -508,12 +513,14 @@ docs = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cocotb", specifier = ">=2.1.0" },
+    { name = "cocotb", marker = "extra == 'cocotb'", specifier = ">=2.1.0" },
     { name = "pytest", specifier = ">=9,<10" },
 ]
+provides-extras = ["cocotb"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "cocotb", specifier = ">=2.1.0" },
     { name = "pyrefly" },
     { name = "ruff" },
 ]

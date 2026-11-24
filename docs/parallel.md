@@ -6,12 +6,13 @@ without the parallel options leaves its normal execution and capture settings
 unchanged.
 
 ```sh
-uv run pytest --workers=4 --output=live --log-cli-level=INFO
-uv run pytest --workers=4 --output=batched --log-cli-level=INFO
+uv run --no-dev pytest --workers=4 --output=live --log-cli-level=INFO
+uv run --no-dev pytest --workers=4 --output=batched --log-cli-level=INFO
 ```
 
 `--workers=N` starts up to `N` workers. `--output` is required for a parallel
-run; neither mode is the default.
+run; neither mode is the default. The runner does not require cocotb. If your
+tests use cocotb, install it separately or pass `--extra cocotb` to `uv run`.
 
 ## Output and logs
 

@@ -1,5 +1,9 @@
 # Architecture
 
+The plugin requires pytest at runtime. The optional `cocotb` extra installs
+cocotb for users running simulations; the plugin itself does not import it.
+The development dependency group includes cocotb for the NVC integration test.
+
 The `pytest11` entry point registers a small, opt-in plugin. Serial runs use
 pytest's own run loop. The parallel run loop starts after collection and
 deselection finish, and forks the collected session on Linux. Workers each run an
