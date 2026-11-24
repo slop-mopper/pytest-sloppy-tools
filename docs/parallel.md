@@ -6,12 +6,12 @@ without the parallel options leaves its normal execution and capture settings
 unchanged.
 
 ```sh
-uv run pytest --sloppy-workers=4 --sloppy-output=live --log-cli-level=INFO
-uv run pytest --sloppy-workers=4 --sloppy-output=batched --log-cli-level=INFO
+uv run pytest --workers=4 --output=live --log-cli-level=INFO
+uv run pytest --workers=4 --output=batched --log-cli-level=INFO
 ```
 
-`--sloppy-workers=N` starts up to `N` workers. `--sloppy-output` is required for a
-parallel run; neither mode is the default.
+`--workers=N` starts up to `N` workers. `--output` is required for a parallel
+run; neither mode is the default.
 
 ## Output and logs
 

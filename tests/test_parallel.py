@@ -82,9 +82,7 @@ def test_parallel_cases_and_output(tmp_path: Path, mode: str) -> None:
 		    )
 		""",
 	)
-	result = _pytest(
-		tmp_path, "--sloppy-workers=2", f"--sloppy-output={mode}", "--log-cli-level=INFO", "--basetemp=test-tmp"
-	)
+	result = _pytest(tmp_path, "--workers=2", f"--output={mode}", "--log-cli-level=INFO", "--basetemp=test-tmp")
 	assert result.returncode == 0, result.stdout + result.stderr
 	assert (tmp_path / "collected").read_text() == "one collection\n"
 	assert "6 passed" in result.stdout
@@ -123,7 +121,7 @@ def test_output_timing(tmp_path: Path, mode: str) -> None:
 	with (
 		log.open("w") as output,
 		subprocess.Popen(
-			_command("--sloppy-workers=1", f"--sloppy-output={mode}"),
+			_command("--workers=1", f"--output={mode}"),
 			cwd=tmp_path,
 			env=_env(),
 			stdout=output,
@@ -174,7 +172,7 @@ def test_fixture_capture_and_pytest_outcomes(tmp_path: Path) -> None:
 		    assert False
 		""",
 	)
-	result = _pytest(tmp_path, "--sloppy-workers=2", "--sloppy-output=batched", "--junitxml=report.xml")
+	result = _pytest(tmp_path, "--workers=2", "--output=batched", "--junitxml=report.xml")
 	assert result.returncode == 1, result.stdout + result.stderr
 	assert "1 failed, 2 passed, 1 skipped, 1 xfailed" in result.stdout
 	assert "OUTPUT_FROM_FAILURE" in result.stdout
@@ -213,7 +211,7 @@ def test_maxfail_runs_fixture_finalisers(tmp_path: Path) -> None:
 		    print("UNEXPECTED TEST")
 		""",
 	)
-	result = _pytest(tmp_path, "-x", "--sloppy-workers=2", "--sloppy-output=batched")
+	result = _pytest(tmp_path, "-x", "--workers=2", "--output=batched")
 	assert result.returncode == 1, result.stdout + result.stderr
 	assert result.stdout.count("FINALISED") == 2
 	assert "UNEXPECTED TEST" not in result.stdout
@@ -230,7 +228,7 @@ def test_worker_crash_is_reported_with_output(tmp_path: Path) -> None:
 		    os._exit(7)
 		""",
 	)
-	result = _pytest(tmp_path, "--sloppy-workers=2", "--sloppy-output=batched")
+	result = _pytest(tmp_path, "--workers=2", "--output=batched")
 	assert result.returncode == 3, result.stdout + result.stderr
 	assert "BEFORE_CRASH" in result.stdout
 	assert "exited before finishing its tests" in result.stdout + result.stderr
@@ -250,7 +248,7 @@ def test_ctrl_c_reaps_worker(tmp_path: Path) -> None:
 		""",
 	)
 	with subprocess.Popen(
-		_command("--sloppy-workers=1", "--sloppy-output=batched"),
+		_command("--workers=1", "--output=batched"),
 		cwd=tmp_path,
 		env=_env(),
 		stdout=subprocess.PIPE,
@@ -279,7 +277,7 @@ def test_serial_and_collection_are_unchanged(tmp_path: Path) -> None:
 	assert serial.returncode == 0, serial.stdout + serial.stderr
 	assert "1 passed" in serial.stdout
 	assert "SERIAL_CAPTURED" not in serial.stdout
-	collect = _pytest(tmp_path, "--collect-only", "--sloppy-workers=2")
+	collect = _pytest(tmp_path, "--collect-only", "--workers=2")
 	assert collect.returncode == 0, collect.stdout + collect.stderr
 	assert "1 test collected" in collect.stdout
 	assert "SERIAL_CAPTURED" not in collect.stdout
@@ -288,9 +286,9 @@ def test_serial_and_collection_are_unchanged(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
 	("options", "message"),
 	[
-		(["--sloppy-workers=0"], "expects a positive integer"),
-		(["--sloppy-workers=2"], "requires --sloppy-output"),
-		(["--sloppy-output=live"], "requires --sloppy-workers"),
+		(["--workers=0"], "expects a positive integer"),
+		(["--workers=2"], "requires --output"),
+		(["--output=live"], "requires --workers"),
 	],
 )
 def test_invalid_options(tmp_path: Path, options: list[str], message: str) -> None:

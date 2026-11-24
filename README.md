@@ -7,8 +7,8 @@ Install from this checkout in a Python 3.13 environment with `uv sync`.
 Parallel execution is **Linux only**. To run four workers, choose an output mode:
 
 ```sh
-uv run pytest --sloppy-workers=4 --sloppy-output=live --log-cli-level=INFO
-uv run pytest --sloppy-workers=4 --sloppy-output=batched --log-cli-level=INFO
+uv run pytest --workers=4 --output=live --log-cli-level=INFO
+uv run pytest --workers=4 --output=batched --log-cli-level=INFO
 ```
 
 Each parametrised case is scheduled separately. Output is labelled with its test

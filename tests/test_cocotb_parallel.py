@@ -64,7 +64,7 @@ def test_parallel_nvc_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
 	monkeypatch.setenv("PYTEST_ADDOPTS", "")
 	monkeypatch.setenv("PYTEST_PLUGINS", "")
 	result = subprocess.run(
-		[sys.executable, "-m", "pytest", "-p", "sloppy_tools", "-q", "--sloppy-workers=2", "--sloppy-output=batched"],
+		[sys.executable, "-m", "pytest", "-p", "sloppy_tools", "-q", "--workers=2", "--output=batched"],
 		cwd=tmp_path,
 		capture_output=True,
 		text=True,

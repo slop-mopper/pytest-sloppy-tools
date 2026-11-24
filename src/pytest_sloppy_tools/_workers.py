@@ -342,9 +342,9 @@ def _collect(session: pytest.Session, directory: Path, workers: list[_Worker], *
 
 def _run(session: pytest.Session, count: int, *, live: bool) -> None:
 	if not Path("/proc/self/task").is_dir():
-		raise pytest.UsageError("--sloppy-workers requires /proc")
+		raise pytest.UsageError("--workers requires /proc")
 	if threading.active_count() != 1 or len(os.listdir("/proc/self/task")) != 1:
-		raise pytest.UsageError("--sloppy-workers cannot fork while collection leaves background threads running")
+		raise pytest.UsageError("--workers cannot fork while collection leaves background threads running")
 	_flush()
 	with TemporaryDirectory(prefix="pytest-sloppy-") as path:
 		directory = Path(path)
