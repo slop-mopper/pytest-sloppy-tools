@@ -36,10 +36,16 @@ process group so cleanup can also signal its subprocesses.
 controller. During the run loop it replaces the terminal reporter's progress
 hooks and keeps pytest's report categories and summary hooks. The renderer
 assigns a slot to each collected item, sizes the percentage column from the
-labels and slot counts, and updates the row after teardown. In serial runs it
-displays pytest's capture sections and ends the progress line before a capture
-fixture sends output to the terminal. With workers it draws around the
-controller's stream output. The child process never renders progress.
+labels and slot counts, and updates the row after teardown. It ends the
+progress line when there is output to display. The child process never renders
+progress.
+
+Serial runs with `--output` or `--pretty` share the worker stream reader.
+The serial adapter redirects file descriptors per item and writes to the
+terminal through a separate descriptor. An explicit `--output` mode replaces
+global stdout and stderr capture for display, while capture fixtures still work.
+Without `--output`, `--pretty` also displays pytest's report capture sections.
+Live streams use a reader thread; batched streams are read after teardown.
 
 GitHub Actions builds the Sphinx site and deploys it to Pages from `master`.
 The release workflow checks that the tag matches `pyproject.toml`, runs the

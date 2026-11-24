@@ -31,7 +31,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 	group.addoption(
 		"--output",
 		choices=("live", "batched"),
-		help="display worker output live or after each test (required with --workers)",
+		help="display test output live or after each test (required with --workers)",
 	)
 	group.addoption("--pretty", action="store_true", help="show compact, grouped test progress")
 
@@ -48,8 +48,12 @@ def pytest_configure(config: pytest.Config) -> None:
 
 		_install(config, parallel=count is not None)
 	if count is None:
-		if output is not None:
-			raise pytest.UsageError("--output requires --workers")
+		if not config.option.collectonly and (config.getoption("pretty") or output is not None):
+			if xdist or config.getoption("distload", False):
+				raise pytest.UsageError("--output cannot be combined with xdist distribution")
+			from ._serial import _install_serial
+
+			_install_serial(config, output)
 		return
 	if config.option.collectonly:
 		return

@@ -101,9 +101,36 @@ def test_pretty_serial_uncaptured_output(tmp_path: Path) -> None:
 	result = _run(tmp_path, "-s", "--color=no")
 	assert result.returncode == 0, result.stdout + result.stderr
 	assert re.search(
-		r"^test_sim  · +50%\nnative output without newline\ntest_sim  ·· +100%$", result.stdout, re.MULTILINE
+		r"^test_sim  · +50%\n--- [^\n]+ ---\nnative output without newline\ntest_sim  ·· +100%$",
+		result.stdout,
+		re.MULTILINE,
 	)
 	assert "\x1b" not in result.stdout
+
+
+@pytest.mark.parametrize(
+	"options",
+	[("--capture=tee-sys",), ("--log-cli-level=INFO",), ("--output=batched",), ("--output=live",)],
+)
+def test_pretty_serial_displays_output_once(tmp_path: Path, options: tuple[str, ...]) -> None:
+	_write(
+		tmp_path,
+		"""
+		import logging
+		import subprocess
+		import sys
+
+		def test_sim(caplog):
+		    print("PYTHON_MARKER", flush=True)
+		    subprocess.run([sys.executable, "-c", "print('SUBPROCESS_MARKER')"], check=True)
+		    logging.warning("LOG_MARKER")
+		    assert "LOG_MARKER" in caplog.text
+		""",
+	)
+	result = _run(tmp_path, *options)
+	assert result.returncode == 0, result.stdout + result.stderr
+	for marker in ("PYTHON_MARKER", "SUBPROCESS_MARKER", "LOG_MARKER"):
+		assert result.stdout.count(marker) == 1
 
 
 def test_pretty_phase_outcomes_and_disambiguation(tmp_path: Path) -> None:
@@ -201,18 +228,31 @@ def _run_terminal(directory: Path, *options: str) -> str:
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="requires a Linux pseudo-terminal")
-def test_pretty_quiet_cases_update_one_terminal_row(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+	"options",
+	[
+		(),
+		("-s",),
+		("--capture=sys",),
+		("--capture=tee-sys",),
+		("--log-cli-level=INFO",),
+		("--output=live",),
+		("--output=batched",),
+	],
+)
+def test_pretty_quiet_cases_update_one_terminal_row(tmp_path: Path, options: tuple[str, ...]) -> None:
 	_write(
 		tmp_path,
 		"""
 		import pytest
 
 		@pytest.mark.parametrize("case", [0, 1, 2])
-		def test_sim(case):
-		    pass
+		def test_sim(case, capsys):
+		    with capsys.disabled():
+		        pass
 		""",
 	)
-	transcript = _run_terminal(tmp_path)
+	transcript = _run_terminal(tmp_path, *options)
 	(row,) = [line for line in transcript.split("\r\n") if line.startswith("test_sim ")]
 	updates = row.split("\r")
 	assert [len(update) for update in updates] == [len("test_sim  ···") + 12 + 4] * 4

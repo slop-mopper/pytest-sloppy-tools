@@ -18,7 +18,8 @@ uv run --no-dev pytest --workers=4 --output=batched --log-cli-level=INFO
 
 Each parametrised case is scheduled separately. Output is labelled with its test
 ID and stream, including output from subprocesses that inherit stdout and stderr.
-Omit both options to run pytest normally.
+Use `--output` without `--workers` to display test output in a serial run,
+or omit both options to keep pytest's normal capture.
 
 Add [`--pretty`](docs/pretty.md) for compact, coloured progress in serial or
 parallel runs. See the [parallel execution guide](docs/parallel.md) for logging,

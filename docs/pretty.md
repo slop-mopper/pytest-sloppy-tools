@@ -4,6 +4,7 @@ Use `--pretty` to replace pytest's progress display in serial and parallel runs:
 
 ```sh
 uv run --no-dev pytest --pretty
+uv run --no-dev pytest --pretty --output=batched
 uv run --no-dev pytest --pretty --workers=4 --output=live
 ```
 
@@ -22,11 +23,11 @@ column with 12 spaces between the longest possible row and the percentage field.
 
 On a terminal, a quiet case updates its row in place when it fits. Test output
 starts on its own line; when the row continues, marks on earlier lines are dimmed
-and new marks keep their colours. Parallel runs honour both `--output=live` and
-`--output=batched`. Serial runs show captured stdout, stderr, and logs after
-each test. With `-s`, `--capture=sys`, `--capture=tee-sys`, or pytest's live
-logging, progress uses a separate line after each test to leave room for output
-that goes directly to the terminal.
+and new marks keep their colours. Both serial and parallel runs honour
+`--output=live` and `--output=batched`. Without an explicit mode, serial runs
+show captured output after each test and display uncaptured output live,
+including pytest's live logs. Enabling live output does not split the row for
+quiet cases.
 
 Redirected output uses plain lines without cursor movement. Quiet cases are
 grouped on one line per function when progress doesn't need to make room for

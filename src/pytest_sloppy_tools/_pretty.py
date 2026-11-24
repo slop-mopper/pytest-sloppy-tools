@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 
 import pytest
 from _pytest._io.wcwidth import wcswidth
-from _pytest.capture import CaptureManager
 from _pytest.terminal import TerminalReporter
 
 
@@ -80,26 +79,13 @@ class _Pretty:
 	def __init__(self, terminal: TerminalReporter, *, parallel: bool) -> None:
 		self.terminal = terminal
 		self.parallel = parallel
-		config = terminal.config
-		capture = config.getoption("capture", "no")
-		self.raw_streams = not parallel and capture in ("no", "tee-sys")
-		self.direct_streams = not parallel and capture != "fd"
-		self.live_logs = (
-			not parallel
-			and config.pluginmanager.hasplugin("logging")
-			and (config.getoption("log_cli_level") is not None or config.getini("log_cli"))
-		)
-		interactive = any(config.getoption(option) for option in ("usepdb", "trace", "setupshow", "setuponly"))
-		self.direct_output = not parallel and (self.direct_streams or self.live_logs or interactive)
-		self.in_place = bool(terminal.isatty) and not self.direct_output
+		self.in_place = bool(terminal.isatty) and (parallel or not _interactive(terminal.config))
 		self.cases: list[_Case] = []
 		self.rows: dict[tuple[str, str], _Row] = {}
 		self.indices: dict[int, int] = {}
 		self.percent_column = 0
 		self.completed = 0
 		self.open_row: _Row | None = None
-		self.serial_index: int | None = None
-		self.sections: list[tuple[str, str]] = []
 
 	def _prepare(self, items: list[pytest.Item]) -> None:
 		keys = [_function(item) for item in items]
@@ -175,34 +161,6 @@ class _Pretty:
 		self._before_output(index)
 		self.terminal.write(f"{title}\n", flush=True)
 
-	@contextmanager
-	def _serial_capture(self) -> Generator[None]:
-		capture = self.terminal.config.pluginmanager.get_plugin("capturemanager")
-		if self.parallel or self.direct_output or not isinstance(capture, CaptureManager):
-			yield
-			return
-
-		original = capture.global_and_fixture_disabled
-
-		@contextmanager
-		def disabled() -> Generator[None]:
-			# Capture fixtures can send output straight to the terminal.
-			with original():
-				index = self.serial_index
-				if index is not None:
-					self._before_output(index)
-				try:
-					yield
-				finally:
-					if index is not None:
-						self.terminal.write("\n", flush=True)
-
-		capture.global_and_fixture_disabled = disabled
-		try:
-			yield
-		finally:
-			capture.global_and_fixture_disabled = original
-
 	def finish(self, index: int) -> None:
 		case = self.cases[index]
 		self.completed += 1
@@ -210,7 +168,7 @@ class _Pretty:
 		if case.outcome is not None:
 			row.marks[case.slot] = case.outcome
 			row.fresh.add(case.slot)
-		if self._can_rewrite() or self.direct_output or case.output_shown or len(row.marks) == row.size:
+		if self._can_rewrite() or case.output_shown or len(row.marks) == row.size:
 			self._show(row)
 
 	@pytest.hookimpl(wrapper=True, tryfirst=True)
@@ -219,7 +177,7 @@ class _Pretty:
 			return (yield)
 		self._prepare(session.items)
 		self.terminal.ensure_newline()
-		with _quiet_progress(self.terminal), self._serial_capture():
+		with _quiet_progress(self.terminal):
 			try:
 				return (yield)
 			finally:
@@ -228,39 +186,9 @@ class _Pretty:
 					if row.fresh:
 						self._show(row, seal=True)
 
-	@pytest.hookimpl(wrapper=True, tryfirst=True)
-	def pytest_runtest_protocol(self, item: pytest.Item) -> Generator[None, object, object]:
-		if self.parallel:
-			return (yield)
-		index = self.indices[id(item)]
-		self.serial_index = index
-		self.sections = []
-		self.start(index)
-		try:
-			result = yield
-			if self.direct_streams:
-				# Native output can bypass capture and omit the trailing newline.
-				self.terminal.write("\n", flush=True)
-			for title, text in self.sections:
-				parts = title.split()
-				if len(parts) < 2 or parts[0] != "Captured" or not text:
-					continue
-				stream = parts[1]
-				if stream == "log" and self.live_logs or stream in ("stdout", "stderr") and self.raw_streams:
-					continue
-				self.heading(index, f"--- {item.nodeid} [{stream}] ---")
-				self.terminal.write(text if text.endswith("\n") else text + "\n", flush=True)
-			self.finish(index)
-			return result
-		finally:
-			self.serial_index = None
 
-	@pytest.hookimpl(trylast=True)
-	def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
-		if self.serial_index is not None:
-			self.report(self.serial_index, report)
-			# Each phase report includes the sections from earlier phases.
-			self.sections = report.sections
+def _interactive(config: pytest.Config) -> bool:
+	return any(config.getoption(option) for option in ("usepdb", "trace", "setupshow", "setuponly"))
 
 
 def _install(config: pytest.Config, *, parallel: bool) -> None:

@@ -4,7 +4,6 @@
 
 """Worker lifecycle, output transport, and report relay."""
 
-import codecs
 import io
 import logging
 import os
@@ -13,33 +12,25 @@ import sys
 import threading
 import time
 import traceback
-from collections.abc import Callable
 from dataclasses import dataclass
 from multiprocessing import Pipe
 from multiprocessing.connection import Connection, wait
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import BinaryIO, Never
+from typing import Never
 from warnings import WarningMessage
 
 import pytest
 from _pytest.capture import CaptureManager
 from _pytest.warnings import warning_record_to_str
 
+from ._output import _STREAMS, _Output, _stream_path
 from ._pretty import _get_pretty
-
-
-_STREAMS = ("stdout", "stderr")
-_CHUNK_SIZE = 64 * 1024
 
 
 def _item_queues(size: int, count: int) -> list[range]:
 	"""Distribute collected item indices, keeping collection order within each worker."""
 	return [range(start, size, count) for start in range(count)]
-
-
-def _stream_path(directory: Path, index: int, stream: str) -> Path:
-	return directory / f"{index}.{stream}"
 
 
 def _flush() -> None:
@@ -138,52 +129,6 @@ def _work(session: pytest.Session, queue: range, channel: Connection, directory:
 		channel.send(("end", None))
 		if not proceed:
 			break
-
-
-class _Output:
-	def __init__(self, directory: Path, index: int, nodeid: str) -> None:
-		self.index = index
-		self.nodeid = nodeid
-		self.paths = [_stream_path(directory, index, stream) for stream in _STREAMS]
-		self.files: list[BinaryIO] = []
-		self.decoders = [codecs.getincrementaldecoder("utf-8")(errors="replace") for _ in _STREAMS]
-		try:
-			for path in self.paths:
-				self.files.append(path.open("rb"))
-		except BaseException:
-			self.close()
-			raise
-
-	def show(self, heading: Callable[[int, str], None], write: Callable[[str], None], *, final: bool) -> None:
-		for stream, file, decoder in zip(_STREAMS, self.files, self.decoders, strict=True):
-			size = os.fstat(file.fileno()).st_size - file.tell()
-			if not final:
-				size = min(size, _CHUNK_SIZE)
-			title = f"--- {self.nodeid} [{stream}] ---"
-			last = ""
-			while size:
-				data = file.read(min(size, _CHUNK_SIZE))
-				if not data:
-					break
-				size -= len(data)
-				if text := decoder.decode(data):
-					if not last:
-						heading(self.index, title)
-					write(text)
-					last = text[-1]
-			if final and (tail := decoder.decode(b"", final=True)):
-				if not last:
-					heading(self.index, title)
-				write(tail)
-				last = tail[-1]
-			if last and last != "\n":
-				write("\n")
-
-	def close(self) -> None:
-		for file in self.files:
-			file.close()
-		for path in self.paths:
-			path.unlink(missing_ok=True)
 
 
 @dataclass
@@ -358,8 +303,15 @@ def _collect(session: pytest.Session, directory: Path, workers: list[_Worker], *
 def _run(session: pytest.Session, count: int, *, live: bool) -> None:
 	if not Path("/proc/self/task").is_dir():
 		raise pytest.UsageError("--workers requires /proc")
-	if threading.active_count() != 1 or len(os.listdir("/proc/self/task")) != 1:
-		raise pytest.UsageError("--workers cannot fork while collection leaves background threads running")
+	threads = [thread.name for thread in threading.enumerate() if thread is not threading.current_thread()]
+	tasks = len(os.listdir("/proc/self/task"))
+	if threads or tasks != 1:
+		detail = f"; Python threads: {', '.join(threads)}" if threads else "; no Python thread names available"
+		raise pytest.UsageError(
+			f"--workers cannot safely fork after collection ({tasks} OS threads{detail}). "
+			"A test import or plugin may have started a thread. Defer that initialisation to a fixture, "
+			"disable the plugin if it is not needed, or run without --workers."
+		)
 	_flush()
 	with TemporaryDirectory(prefix="pytest-sloppy-") as path:
 		directory = Path(path)

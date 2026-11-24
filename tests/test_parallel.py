@@ -101,7 +101,8 @@ def test_parallel_cases_and_output(tmp_path: Path, mode: str) -> None:
 
 
 @pytest.mark.parametrize("mode", ["live", "batched"])
-def test_output_timing(tmp_path: Path, mode: str) -> None:
+@pytest.mark.parametrize("worker_options", [(), ("--workers=1",)], ids=["serial", "parallel"])
+def test_output_timing(tmp_path: Path, mode: str, worker_options: tuple[str, ...]) -> None:
 	_write(
 		tmp_path,
 		"""
@@ -121,7 +122,7 @@ def test_output_timing(tmp_path: Path, mode: str) -> None:
 	with (
 		log.open("w") as output,
 		subprocess.Popen(
-			_command("--workers=1", f"--output={mode}"),
+			_command(*worker_options, f"--output={mode}"),
 			cwd=tmp_path,
 			env=_env(),
 			stdout=output,
@@ -143,7 +144,8 @@ def test_output_timing(tmp_path: Path, mode: str) -> None:
 	assert "OUTPUT_MARKER" in log.read_text()
 
 
-def test_fixture_capture_and_pytest_outcomes(tmp_path: Path) -> None:
+@pytest.mark.parametrize("worker_options", [(), ("--workers=2",)], ids=["serial", "parallel"])
+def test_fixture_capture_and_pytest_outcomes(tmp_path: Path, worker_options: tuple[str, ...]) -> None:
 	_write(
 		tmp_path,
 		"""
@@ -172,7 +174,7 @@ def test_fixture_capture_and_pytest_outcomes(tmp_path: Path) -> None:
 		    assert False
 		""",
 	)
-	result = _pytest(tmp_path, "--workers=2", "--output=batched", "--junitxml=report.xml")
+	result = _pytest(tmp_path, *worker_options, "--output=batched", "--junitxml=report.xml")
 	assert result.returncode == 1, result.stdout + result.stderr
 	assert "1 failed, 2 passed, 1 skipped, 1 xfailed" in result.stdout
 	assert "OUTPUT_FROM_FAILURE" in result.stdout
@@ -288,10 +290,31 @@ def test_serial_and_collection_are_unchanged(tmp_path: Path) -> None:
 	[
 		(["--workers=0"], "expects a positive integer"),
 		(["--workers=2"], "requires --output"),
-		(["--output=live"], "requires --workers"),
+		(["--output=unknown"], "invalid choice"),
 	],
 )
 def test_invalid_options(tmp_path: Path, options: list[str], message: str) -> None:
 	result = _pytest(tmp_path, *options)
 	assert result.returncode == 4, result.stdout + result.stderr
 	assert message in result.stderr
+
+
+def test_workers_report_collection_threads(tmp_path: Path) -> None:
+	_write(
+		tmp_path,
+		"""
+		from threading import Event, Thread
+
+		Thread(target=Event().wait, name="example-collection-thread", daemon=True).start()
+
+		def test_example():
+		    pass
+		""",
+	)
+	result = _pytest(tmp_path, "--workers=2", "--output=batched")
+	assert result.returncode == 4, result.stdout + result.stderr
+	assert "cannot safely fork after collection" in result.stderr
+	assert "example-collection-thread" in result.stderr
+	assert "OS threads" in result.stderr
+	result = _pytest(tmp_path, "--output=batched")
+	assert result.returncode == 0, result.stdout + result.stderr
