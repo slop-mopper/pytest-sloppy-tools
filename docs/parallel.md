@@ -42,10 +42,14 @@ warnings with stderr unless you pass `--disable-warnings`.
 
 ## Scheduling and fixtures
 
-Each collected item, including every parametrised case, is scheduled
-independently. The runner distributes items round-robin and runs each worker's
-items in collection order. It does not move queued items to an idle worker.
-Module- and session-scoped fixtures are local to each worker using them, so a
+Workers take individual test cases, including parametrised cases, from a shared
+queue in collection order. Each worker reserves at most one next case, at the
+start of teardown. Faster workers can take more unassigned cases, and the
+assignment can change between runs. `--pretty` still displays result marks in
+collection order.
+
+Pytest can reuse broader-scoped fixtures when the next case on the same worker
+shares them. Module- and session-scoped fixtures are local to each worker, so a
 simulator build in a module-scoped fixture can run more than once.
 
 Use pytest's `tmp_path` fixture for per-test cocotb build directories, or use
@@ -79,7 +83,9 @@ supported with this fallback. Use importable plugin names and leave off `--debug
 Tests that require interactive input, pytest's interactive debugger, or xdist
 distribution must run separately. Plugins that depend on all test hooks and
 session hooks running in the same process may not work: test execution hooks
-run in the workers and the controller replays their reports.
+run in the workers and the controller replays their reports. In a worker,
+`pytest_runtest_protocol` receives `nextitem=None`; `pytest_runtest_teardown`
+receives the next assigned item, if any.
 
 When `-x` or `--maxfail` triggers, tests that already started finish and workers
 stop taking new items. If a worker crashes, pytest reports the crash and terminates

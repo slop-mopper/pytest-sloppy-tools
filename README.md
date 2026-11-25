@@ -16,8 +16,9 @@ uv run --no-dev pytest --workers=4 --output=live --log-cli-level=INFO
 uv run --no-dev pytest --workers=4 --output=batched --log-cli-level=INFO
 ```
 
-Each parametrised case is scheduled separately. If collection leaves background
-threads running, the runner starts fresh interpreters instead of forking.
+Workers take individual test cases from a shared queue. If collection leaves
+background threads running, the runner starts fresh interpreters instead of
+forking.
 Output is labelled with its test ID and stream, including output from
 subprocesses that inherit stdout and stderr.
 Use `--output` without `--workers` to display test output in a serial run,

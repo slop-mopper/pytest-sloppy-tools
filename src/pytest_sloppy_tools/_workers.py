@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 import traceback
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from multiprocessing import Pipe
 from multiprocessing.connection import Connection, wait
@@ -25,14 +26,10 @@ from warnings import WarningMessage
 import pytest
 from _pytest.capture import CaptureManager
 from _pytest.warnings import warning_record_to_str
+from pluggy import HookImpl
 
 from ._output import _STREAMS, _Output, _stream_path
 from ._pretty import _get_pretty
-
-
-def _item_queues(size: int, count: int) -> list[range]:
-	"""Distribute collected item indices, keeping collection order within each worker."""
-	return [range(start, size, count) for start in range(count)]
 
 
 def _flush() -> None:
@@ -111,28 +108,61 @@ class _WorkerReports:
 			sys.stderr.write(warning_record_to_str(warning_message))
 
 
-def _work(session: pytest.Session, queue: range, channel: Connection, directory: Path, basetemp: Path | None) -> None:
+def _work(session: pytest.Session, channel: Connection, directory: Path, basetemp: Path | None) -> None:
+	manager = session.config.pluginmanager
 	_configure_worker(session.config, basetemp)
-	session.config.pluginmanager.register(_WorkerReports(channel, session.config))
-	for position, index in enumerate(queue):
-		item = session.items[index]
-		nextitem = session.items[queue[position + 1]] if position + 1 < len(queue) else None
-		for fd, stream in enumerate(_STREAMS, start=1):
-			with _stream_path(directory, index, stream).open("wb") as output:
-				os.dup2(output.fileno(), fd)
-		channel.send(("begin", index))
-		item.ihook.pytest_runtest_protocol(item=item, nextitem=nextitem)
-		_flush()
-		channel.send(("decision", (str(session.shouldstop or ""), nextitem is not None)))
-		proceed = channel.recv()
-		if not proceed:
-			# On an early stop, the last protocol may have kept broader-scoped
-			# fixtures for a queued item that will no longer run.
-			session._setupstate.teardown_exact(None)
-		_flush()
-		channel.send(("end", None))
-		if not proceed:
-			break
+	manager.register(_WorkerReports(channel, session.config))
+	index: int | None = channel.recv()
+	item: pytest.Item | None = None
+	next_index: int | None = None
+	requested = False
+
+	def request_next() -> None:
+		nonlocal requested, next_index
+		requested = True
+		if not (session.shouldstop or session.shouldfail):
+			channel.send(("next", None))
+			next_index = channel.recv()
+
+	def before(hook_name: str, _impls: Sequence[HookImpl], kwargs: Mapping[str, object]) -> None:
+		if hook_name != "pytest_runtest_teardown" or kwargs["item"] is not item:
+			return
+		if not requested:
+			request_next()
+		# Pluggy passes the same kwargs dict to the teardown hook, so built-in
+		# and third-party teardown hooks see the actual next item.
+		assert isinstance(kwargs, dict)
+		kwargs["nextitem"] = (
+			session.items[next_index]
+			if next_index is not None and not (session.shouldstop or session.shouldfail)
+			else None
+		)
+
+	undo = manager.add_hookcall_monitoring(before, lambda *_: None)
+	try:
+		while index is not None:
+			item = session.items[index]
+			next_index = None
+			requested = False
+			for fd, stream in enumerate(_STREAMS, start=1):
+				with _stream_path(directory, index, stream).open("wb") as output:
+					os.dup2(output.fileno(), fd)
+			channel.send(("begin", index))
+			item.ihook.pytest_runtest_protocol(item=item, nextitem=None)
+			_flush()
+			if not requested:
+				# A custom protocol can omit the teardown hook altogether.
+				request_next()
+			channel.send(("decision", (str(session.shouldstop or ""), next_index is not None)))
+			proceed = channel.recv()
+			if not proceed:
+				# A stop can arrive after teardown kept fixtures for the next item.
+				session._setupstate.teardown_exact(None)
+			_flush()
+			channel.send(("end", None))
+			index = next_index if proceed else None
+	finally:
+		undo()
 
 
 @dataclass
@@ -144,7 +174,6 @@ class _Worker:
 	stopping: bool = False
 	process: Popen[bytes] | None = None
 	startup_log: Path | None = None
-	queue: range | None = None
 
 	def reap(self) -> int:
 		if self.process is not None:
@@ -152,7 +181,7 @@ class _Worker:
 		return os.waitstatus_to_exitcode(os.waitpid(self.pid, 0)[1])
 
 
-def _spawn(session: pytest.Session, queue: range, directory: Path, basetemp: Path, workers: list[_Worker]) -> None:
+def _spawn(session: pytest.Session, directory: Path, basetemp: Path, workers: list[_Worker]) -> None:
 	parent, child = Pipe()
 	try:
 		pid = os.fork()
@@ -167,7 +196,7 @@ def _spawn(session: pytest.Session, queue: range, directory: Path, basetemp: Pat
 			parent.close()
 			for worker in workers:
 				worker.channel.close()
-			_work(session, queue, child, directory, basetemp)
+			_work(session, child, directory, basetemp)
 			exit_code = 0
 		except KeyboardInterrupt:
 			child.send(("interrupt", None))
@@ -181,7 +210,7 @@ def _spawn(session: pytest.Session, queue: range, directory: Path, basetemp: Pat
 	child.close()
 
 
-def _spawn_fresh(config: pytest.Config, queue: range, directory: Path, basetemp: Path, workers: list[_Worker]) -> None:
+def _spawn_fresh(config: pytest.Config, directory: Path, basetemp: Path, workers: list[_Worker]) -> None:
 	number = len(workers)
 	log = directory / f"startup-{number}.log"
 	cache_dir = directory / f"cache-{number}"
@@ -216,7 +245,7 @@ def _spawn_fresh(config: pytest.Config, queue: range, directory: Path, basetemp:
 		raise
 	finally:
 		child.close()
-	workers.append(_Worker(process.pid, parent, process=process, startup_log=log, queue=queue))
+	workers.append(_Worker(process.pid, parent, process=process, startup_log=log))
 	try:
 		parent.send((args, invocation.plugins or (), directory))
 	except (EOFError, ConnectionError):
@@ -301,9 +330,21 @@ def _collect(session: pytest.Session, directory: Path, workers: list[_Worker], *
 		else:
 			terminal.write(text, flush=True)
 
-	pending = {worker.pid for worker in workers if worker.queue is not None}
+	unassigned = iter(range(len(session.items)))
+
+	def assign(worker: _Worker) -> None:
+		index = None if session.shouldfail or session.shouldstop else next(unassigned, None)
+		try:
+			worker.channel.send(index)
+		except (EOFError, ConnectionError):
+			_crash(worker)
+
+	pending = {worker.pid for worker in workers if worker.process is not None}
 	expected = [item.nodeid for item in session.items] if pending else []
 	try:
+		if not pending:
+			for worker in workers:
+				assign(worker)
 		while workers:
 			ready = wait([worker.channel for worker in workers], timeout=0.05 if live else 0.1)
 			for worker in workers[:]:
@@ -323,10 +364,7 @@ def _collect(session: pytest.Session, directory: Path, workers: list[_Worker], *
 					pending.remove(worker.pid)
 					if not pending:
 						for candidate in workers:
-							try:
-								candidate.channel.send(candidate.queue)
-							except (EOFError, ConnectionError):
-								_crash(candidate)
+							assign(candidate)
 				elif event == "begin":
 					worker.item = session.items[data]
 					worker.output = _Output(directory, data)
@@ -356,6 +394,8 @@ def _collect(session: pytest.Session, directory: Path, workers: list[_Worker], *
 								pretty.report(worker.output.index, report)
 						case "logfinish":
 							hook.pytest_runtest_logfinish(nodeid=data[0], location=data[1])
+						case "next":
+							assign(worker)
 						case "decision":
 							stop, has_next = data
 							if stop and not session.shouldstop:
@@ -418,12 +458,12 @@ def _run(session: pytest.Session, count: int, *, live: bool) -> None:
 		basetemp = factory.getbasetemp() if factory is not None else directory
 		workers: list[_Worker] = []
 		try:
-			for number, queue in enumerate(_item_queues(len(session.items), min(count, len(session.items)))):
+			for number in range(min(count, len(session.items))):
 				worker_temp = basetemp / f"sloppy-{number}"
 				if fresh:
-					_spawn_fresh(session.config, queue, directory, worker_temp, workers)
+					_spawn_fresh(session.config, directory, worker_temp, workers)
 				else:
-					_spawn(session, queue, directory, worker_temp, workers)
+					_spawn(session, directory, worker_temp, workers)
 		except BaseException:
 			_abort(workers)
 			raise

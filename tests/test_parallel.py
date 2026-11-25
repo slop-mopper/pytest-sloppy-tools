@@ -50,6 +50,37 @@ def fresh_workers(tmp_path: Path, request: pytest.FixtureRequest) -> bool:
 	return request.param
 
 
+@pytest.mark.usefixtures("fresh_workers")
+def test_available_worker_drains_shared_queue(tmp_path: Path) -> None:
+	_write(
+		tmp_path,
+		"""
+		import os
+		import time
+		from pathlib import Path
+
+		import pytest
+
+		@pytest.mark.parametrize("case", range(5))
+		def test_case(case):
+		    if case == 0:
+		        deadline = time.monotonic() + 5
+		        while not Path("queue_drained").exists():
+		            assert time.monotonic() < deadline, "pending cases stuck behind the slow case"
+		            time.sleep(0.01)
+		    print(f"CASE {case} PID {os.getpid()}")
+		    if case == 4:
+		        Path("queue_drained").touch()
+		""",
+	)
+	result = _pytest(tmp_path, "--workers=2", "--output=batched")
+	assert result.returncode == 0, result.stdout + result.stderr
+	matches = sorted(re.findall(r"CASE (\d) PID (\d+)", result.stdout))
+	assert [case for case, _ in matches] == list("01234")
+	assert len({pid for _, pid in matches[1:]}) == 1
+	assert matches[0][1] != matches[1][1]
+
+
 @pytest.mark.parametrize("mode", ["live", "batched"])
 def test_parallel_cases_and_output(tmp_path: Path, mode: str, fresh_workers: bool) -> None:
 	_write(
@@ -238,6 +269,37 @@ def test_maxfail_runs_fixture_finalisers(tmp_path: Path) -> None:
 	assert result.returncode == 1, result.stdout + result.stderr
 	assert result.stdout.count("FINALISED") == 2
 	assert "UNEXPECTED TEST" not in result.stdout
+
+
+@pytest.mark.usefixtures("fresh_workers")
+def test_teardown_failure_cancels_reserved_case(tmp_path: Path) -> None:
+	_write(
+		tmp_path,
+		"""
+		import pytest
+
+		@pytest.fixture(scope="module", autouse=True)
+		def state():
+		    yield
+		    print("MODULE FINALISED")
+
+		@pytest.fixture
+		def broken():
+		    yield
+		    raise RuntimeError("teardown failed")
+
+		def test_first(broken):
+		    pass
+
+		def test_reserved():
+		    pytest.fail("reserved case should not run")
+		""",
+	)
+	result = _pytest(tmp_path, "-x", "--workers=1", "--output=batched")
+	assert result.returncode == 1, result.stdout + result.stderr
+	assert "RuntimeError: teardown failed" in result.stdout
+	assert result.stdout.count("MODULE FINALISED") == 1
+	assert "test_reserved" not in result.stdout
 
 
 @pytest.mark.usefixtures("fresh_workers")

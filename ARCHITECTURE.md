@@ -10,23 +10,23 @@ deselection finish. On Linux, the controller forks the collected session when
 only one thread is present. If Python or `/proc` reports additional threads, the
 controller launches fresh interpreters with the original pytest arguments.
 Each interpreter collects independently and sends its ordered node IDs to
-the controller. Queues are released only after every worker's list matches.
+the controller. The controller assigns work only after every worker's list
+matches.
 Fresh workers get separate base temporary directories and copies of pytest's
 cached collection-order data. Only the controller writes JUnit XML or its
 configured pytest log file.
 
-Both launchers run an ordered queue of item indices through pytest's test
-protocol in each worker. The queue builder
-contains the round-robin scheduling policy; worker execution does not depend
-on the policy. Each worker passes its actual next item to pytest so the fixture
-manager can reuse broader-scoped fixtures in that process. Each worker uses a
+Both launchers use the same controller-owned queue of item indices. Each
+worker starts with one item and requests its next item at the start of pytest's
+teardown hook. The worker passes that item to the teardown hooks so pytest
+can reuse broader-scoped fixtures in that process. Each worker uses a
 subdirectory of the session's base temporary directory for pytest's `tmp_path`.
 
 The controller owns the terminal and the session result. Each worker sends
 lifecycle messages and pytest-serialised reports over a private connection. The
-controller replays reports through pytest's reporting hooks and signals whether
-the worker should continue once the current test finishes. Only the worker runs
-the test and its fixture code.
+controller replays reports through pytest's reporting hooks. It checks the
+session's stop conditions again after teardown, before allowing a worker to
+start its next assigned item. Only the worker runs the test and its fixture code.
 
 Workers redirect stdout and stderr at the file descriptor level to a temporary
 pair of files per item. The controller reads those files periodically for live

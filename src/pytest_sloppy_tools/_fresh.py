@@ -35,14 +35,13 @@ class _FreshWorker:
 		if session.testsfailed and not session.config.option.continue_on_collection_errors:
 			raise session.Interrupted("worker collection failed")
 		self.channel.send(("collected", [item.nodeid for item in session.items]))
-		queue = self.channel.recv()
 		with ExitStack() as restore:
 			for fd in (1, 2):
 				saved = os.dup(fd)
 				restore.callback(os.close, saved)
 				restore.callback(os.dup2, saved, fd)
 			try:
-				_work(session, queue, self.channel, self.directory, basetemp=None)
+				_work(session, self.channel, self.directory, basetemp=None)
 			except KeyboardInterrupt:
 				self.channel.send(("interrupt", None))
 				raise
