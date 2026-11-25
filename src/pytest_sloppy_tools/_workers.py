@@ -435,7 +435,7 @@ def _collect(session: pytest.Session, directory: Path, workers: list[_Worker], *
 
 def _run(session: pytest.Session, count: int, *, live: bool) -> None:
 	if not Path("/proc/self/task").is_dir():
-		raise pytest.UsageError("--workers requires /proc")
+		raise pytest.UsageError("--parallel requires /proc")
 	threads = [thread.name for thread in threading.enumerate() if thread is not threading.current_thread()]
 	tasks = len(os.listdir("/proc/self/task"))
 	fresh = bool(threads or tasks != 1)

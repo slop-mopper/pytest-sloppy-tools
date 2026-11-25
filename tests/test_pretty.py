@@ -66,7 +66,7 @@ def test_pretty_groups_cases_and_reprints_after_output(tmp_path: Path, mode: str
 		""",
 		"conftest.py",
 	)
-	workers = [] if mode == "serial" else ["--workers=1", f"--output={mode}"]
+	workers = [] if mode == "serial" else ["--parallel=1", f"--output={mode}"]
 	result = _run(tmp_path, "-v", "--color=yes", *workers)
 	assert result.returncode == 1, result.stdout + result.stderr
 	progress, summary = result.stdout.split("CUSTOM SUMMARY", 1)
@@ -199,7 +199,7 @@ def test_pretty_parallel_uses_collection_order(tmp_path: Path) -> None:
 		        pytest.skip("second case skipped")
 		""",
 	)
-	result = _run(tmp_path, "--workers=2", "--output=batched", "--color=no")
+	result = _run(tmp_path, "--parallel=2", "--output=batched", "--color=no")
 	assert result.returncode == 0, result.stdout + result.stderr
 	assert re.findall(r"^test_sim  (.*?) +(\d+%)$", result.stdout, re.MULTILINE) == [("·s··", "100%")]
 
@@ -280,7 +280,7 @@ def test_pretty_terminal_output_starts_after_progress_row(tmp_path: Path, mode: 
 		    print("captured Python output")
 		""",
 	)
-	workers = [] if mode == "serial" else ["--workers=1", f"--output={mode}"]
+	workers = [] if mode == "serial" else ["--parallel=1", f"--output={mode}"]
 	transcript = _run_terminal(tmp_path, *workers)
 	assert re.search(
 		r"test_sim +0%\r\n—— stdout │ test_sim ——\r\nnative output without newline",

@@ -73,7 +73,7 @@ def test_available_worker_drains_shared_queue(tmp_path: Path) -> None:
 		        Path("queue_drained").touch()
 		""",
 	)
-	result = _pytest(tmp_path, "--workers=2", "--output=batched")
+	result = _pytest(tmp_path, "-j", "2", "--output=batched")
 	assert result.returncode == 0, result.stdout + result.stderr
 	matches = sorted(re.findall(r"CASE (\d) PID (\d+)", result.stdout))
 	assert [case for case, _ in matches] == list("01234")
@@ -128,7 +128,7 @@ def test_parallel_cases_and_output(tmp_path: Path, mode: str, fresh_workers: boo
 		    )
 		""",
 	)
-	result = _pytest(tmp_path, "--workers=2", f"--output={mode}", "--log-cli-level=INFO", "--basetemp=test-tmp")
+	result = _pytest(tmp_path, "--parallel=2", f"--output={mode}", "--log-cli-level=INFO", "--basetemp=test-tmp")
 	assert result.returncode == 0, result.stdout + result.stderr
 	assert (tmp_path / "collected").read_text() == "one collection\n" * (3 if fresh_workers else 1)
 	if fresh_workers:
@@ -151,9 +151,16 @@ def test_parallel_cases_and_output(tmp_path: Path, mode: str, fresh_workers: boo
 		assert f"NATIVE {case}\n" in result.stdout
 
 
-@pytest.mark.parametrize("mode", ["live", "batched"])
-@pytest.mark.parametrize("worker_options", [(), ("--workers=1",)], ids=["serial", "parallel"])
-def test_output_timing(tmp_path: Path, mode: str, worker_options: tuple[str, ...]) -> None:
+@pytest.mark.parametrize(
+	("options", "mode"),
+	[
+		pytest.param(("--output=live",), "live", id="serial-live"),
+		pytest.param(("--output=batched",), "batched", id="serial-batched"),
+		pytest.param(("--parallel=1",), "live", id="parallel-default"),
+		pytest.param(("--parallel=1", "--output=batched"), "batched", id="parallel-batched"),
+	],
+)
+def test_output_timing(tmp_path: Path, options: tuple[str, ...], mode: str) -> None:
 	_write(
 		tmp_path,
 		"""
@@ -173,7 +180,7 @@ def test_output_timing(tmp_path: Path, mode: str, worker_options: tuple[str, ...
 	with (
 		log.open("w") as output,
 		subprocess.Popen(
-			_command(*worker_options, f"--output={mode}"),
+			_command(*options),
 			cwd=tmp_path,
 			env=_env(),
 			stdout=output,
@@ -195,7 +202,7 @@ def test_output_timing(tmp_path: Path, mode: str, worker_options: tuple[str, ...
 	assert "OUTPUT_MARKER" in log.read_text()
 
 
-@pytest.mark.parametrize("worker_options", [(), ("--workers=2",)], ids=["serial", "parallel"])
+@pytest.mark.parametrize("worker_options", [(), ("--parallel=2",)], ids=["serial", "parallel"])
 def test_fixture_capture_and_pytest_outcomes(tmp_path: Path, worker_options: tuple[str, ...]) -> None:
 	_write(
 		tmp_path,
@@ -265,7 +272,7 @@ def test_maxfail_runs_fixture_finalisers(tmp_path: Path) -> None:
 		    print("UNEXPECTED TEST")
 		""",
 	)
-	result = _pytest(tmp_path, "-x", "--workers=2", "--output=batched")
+	result = _pytest(tmp_path, "-x", "--parallel=2", "--output=batched")
 	assert result.returncode == 1, result.stdout + result.stderr
 	assert result.stdout.count("FINALISED") == 2
 	assert "UNEXPECTED TEST" not in result.stdout
@@ -295,7 +302,7 @@ def test_teardown_failure_cancels_reserved_case(tmp_path: Path) -> None:
 		    pytest.fail("reserved case should not run")
 		""",
 	)
-	result = _pytest(tmp_path, "-x", "--workers=1", "--output=batched")
+	result = _pytest(tmp_path, "-x", "--parallel=1", "--output=batched")
 	assert result.returncode == 1, result.stdout + result.stderr
 	assert "RuntimeError: teardown failed" in result.stdout
 	assert result.stdout.count("MODULE FINALISED") == 1
@@ -314,7 +321,7 @@ def test_worker_crash_is_reported_with_output(tmp_path: Path) -> None:
 		    os._exit(7)
 		""",
 	)
-	result = _pytest(tmp_path, "--workers=2", "--output=batched")
+	result = _pytest(tmp_path, "--parallel=2", "--output=batched")
 	assert result.returncode == 3, result.stdout + result.stderr
 	assert "BEFORE_CRASH" in result.stdout
 	assert "exited before finishing its tests" in result.stdout + result.stderr
@@ -335,7 +342,7 @@ def test_ctrl_c_reaps_worker(tmp_path: Path) -> None:
 		""",
 	)
 	with subprocess.Popen(
-		_command("--workers=1", "--output=batched"),
+		_command("--parallel=1", "--output=batched"),
 		cwd=tmp_path,
 		env=_env(),
 		stdout=subprocess.PIPE,
@@ -364,17 +371,38 @@ def test_serial_and_collection_are_unchanged(tmp_path: Path) -> None:
 	assert serial.returncode == 0, serial.stdout + serial.stderr
 	assert "1 passed" in serial.stdout
 	assert "SERIAL_CAPTURED" not in serial.stdout
-	collect = _pytest(tmp_path, "--collect-only", "--workers=2")
+	collect = _pytest(tmp_path, "--collect-only", "--parallel")
 	assert collect.returncode == 0, collect.stdout + collect.stderr
 	assert "1 test collected" in collect.stdout
 	assert "SERIAL_CAPTURED" not in collect.stdout
 
 
 @pytest.mark.parametrize(
+	("options", "cpu_count", "expected"),
+	[
+		pytest.param(("--parallel",), 5, 2, id="half-rounded-down"),
+		pytest.param(("-j",), 5, 2, id="short-flag-without-count"),
+		pytest.param(("-j",), 1, 1, id="at-least-one"),
+		pytest.param(("--parallel",), None, 1, id="unknown-cpu-count"),
+		pytest.param(("--parallel",), 16, 3, id="capped-by-test-count"),
+	],
+)
+def test_automatic_worker_count(tmp_path: Path, options: tuple[str, ...], cpu_count: int | None, expected: int) -> None:
+	_write(tmp_path, f"import os\n\nos.process_cpu_count = lambda: {cpu_count!r}\n", "conftest.py")
+	_write(tmp_path, "def test_one(): pass\ndef test_two(): pass\ndef test_three(): pass\n")
+	result = _pytest(tmp_path, "--basetemp=test-tmp", *options, "--", "test_example.py")
+	assert result.returncode == 0, result.stdout + result.stderr
+	assert "3 passed" in result.stdout
+	assert len(list((tmp_path / "test-tmp").glob("sloppy-*"))) == expected
+
+
+@pytest.mark.parametrize(
 	("options", "message"),
 	[
-		(["--workers=0"], "expects a positive integer"),
-		(["--workers=2"], "requires --output"),
+		(["--parallel=0"], "expected a positive integer"),
+		(["-j", "-2"], "expected a positive integer"),
+		(["--parallel=foo"], "expected a positive integer"),
+		(["--workers=2"], "unrecognized arguments"),
 		(["--output=unknown"], "invalid choice"),
 	],
 )
@@ -413,7 +441,7 @@ def test_fresh_workers_verify_order_before_running(tmp_path: Path) -> None:
 		""",
 		"conftest.py",
 	)
-	result = _pytest(tmp_path, "--workers=2", "--output=batched")
+	result = _pytest(tmp_path, "--parallel=2", "--output=batched")
 	assert result.returncode == 3, result.stdout + result.stderr
 	assert "collected different tests" in result.stdout + result.stderr
 	assert "controller collected 'test_example.py::test_a', worker collected 'test_example.py::test_b'" in (
@@ -450,7 +478,7 @@ def test_fresh_workers_replay_selection_and_keep_one_junit_report(tmp_path: Path
 	# Keep the in-repo cache, CLI selection, and the config/env addopts path in
 	# the replay. No extra options are passed through after the positional "--".
 	env = {**_env(), "PYTEST_ADDOPTS": "-k selected"}
-	command = _command("--workers=2", "--output=batched", "--pretty", "--junitxml=report.xml", "--", "test_example.py")
+	command = _command("--parallel=2", "--output=batched", "--pretty", "--junitxml=report.xml", "--", "test_example.py")
 	result = subprocess.run(command, cwd=tmp_path, env=env, text=True, capture_output=True, timeout=20, check=False)
 	assert result.returncode == 1, result.stdout + result.stderr
 	assert "Results: 1 passed, 1 failed, 2 deselected in " in result.stdout
@@ -458,7 +486,7 @@ def test_fresh_workers_replay_selection_and_keep_one_junit_report(tmp_path: Path
 	assert (tmp_path / "report.xml").read_text().count("<testcase ") == 2
 	# Last-failed selection depends on the controller cache. Workers must use
 	# the same starting state and must not replace that cache at shutdown.
-	command = _command("--workers=2", "--output=batched", "--lf", "--", "test_example.py")
+	command = _command("--parallel=2", "--output=batched", "--lf", "--", "test_example.py")
 	result = subprocess.run(command, cwd=tmp_path, env=env, text=True, capture_output=True, timeout=20, check=False)
 	assert result.returncode == 1, result.stdout + result.stderr
 	assert "Starting fresh workers" in result.stdout

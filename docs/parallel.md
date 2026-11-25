@@ -7,24 +7,30 @@ Running pytest without the plugin's options leaves its normal execution and
 capture settings unchanged.
 
 ```sh
-uv run --no-dev pytest --workers=4 --output=live --log-cli-level=INFO
-uv run --no-dev pytest --workers=4 --output=batched --log-cli-level=INFO
+uv run --no-dev pytest --parallel --log-cli-level=INFO
+uv run --no-dev pytest -j4 --output=batched --log-cli-level=INFO
 ```
 
-`--workers=N` starts up to `N` workers. `--output` is required for a parallel
-run; neither mode is the default. The runner does not require cocotb. If your
-tests use cocotb, install it separately or pass `--extra cocotb` to `uv run`.
+`--parallel=N` (or `-j N`) starts up to `N` workers. Without a count,
+`--parallel` and `-j` use half the logical CPUs available to pytest, rounded
+down to a minimum of one worker. If you omit the count, place test paths
+before the flag or separate them with `--`, as in `pytest -j -- tests/`.
+In 0.3.0, `--parallel` replaces `--workers`.
+
+The runner does not require cocotb. If your tests use cocotb, install it
+separately or pass `--extra cocotb` to `uv run`.
 
 ## Output and logs
 
-`--output=live` and `--output=batched` also work without `--workers` or
-`--pretty`. In `live` mode, flushed output appears while the test runs. For
-subprocesses that buffer their output, configure the subprocess to flush or run
-unbuffered. In `batched` mode, output appears after the test's setup, call, and
-teardown finish. Both modes display output for passing and failing tests and
-label stdout and stderr with the pytest node ID. Output within each stream is
-displayed in order; ordering between stdout and stderr is not guaranteed. In
-parallel runs, only the controller displays pytest progress and the summary.
+Parallel runs default to `--output=live`. Both `--output=live` and
+`--output=batched` can also be selected for serial runs. In `live` mode,
+flushed output appears while the test runs. If a subprocess buffers its
+output, configure it to flush or run unbuffered. In `batched` mode, output
+appears after the test's setup, call, and teardown finish. Both modes display
+output for passing and failing tests and label stdout and stderr with the
+pytest node ID. Output within each stream is displayed in order; ordering
+between stdout and stderr is not guaranteed. In parallel runs, only the
+controller displays pytest progress and the summary.
 
 Python logging records that reach the root logger are written to the test's
 stderr stream. The display level comes from `log_cli_level` (for example,
@@ -32,9 +38,10 @@ stderr stream. The display level comes from `log_cli_level` (for example,
 also remain available through `caplog` and pytest's report sections. Existing
 console log handlers may display the same record a second time.
 
-With an explicit `--output` mode, the plugin captures native writes and output
-from subprocesses that inherit stdout and stderr. `capsys` and `capfd` still
-work: output consumed by a capture fixture does not appear on the terminal.
+In parallel runs and serial runs with an explicit `--output` mode, the plugin
+captures native writes and output from subprocesses that inherit stdout and
+stderr. `capsys` and `capfd` still work: output consumed by a capture fixture
+does not appear on the terminal.
 The streams are for terminal display and are not added to pytest's captured
 stdout and stderr report sections or JUnit attachments. Without `--output`,
 serial runs keep pytest's normal capture reporting. Parallel workers display
@@ -61,7 +68,7 @@ subprocesses the test starts before it ends so their output reaches the terminal
 
 A test import or plugin can start background threads during collection, including
 native threads from NumPy or SciPy. Forking at this point can leave a worker
-waiting on a lock from a thread it did not inherit. `--workers` automatically
+waiting on a lock from a thread it did not inherit. `--parallel` automatically
 starts fresh interpreters instead and prints one notice with the thread count.
 It does not change your environment's BLAS thread settings. If workers compete
 for CPU time, adjust the worker count or your BLAS thread budget.

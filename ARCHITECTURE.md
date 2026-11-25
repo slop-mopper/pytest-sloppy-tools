@@ -5,10 +5,14 @@ cocotb for users running simulations; the plugin itself does not import it.
 The development dependency group includes cocotb for the NVC integration test.
 
 The `pytest11` entry point registers a small, opt-in plugin. Serial runs use
-pytest's own run loop. The parallel run loop starts after collection and
-deselection finish. On Linux, the controller forks the collected session when
-only one thread is present. If Python or `/proc` reports additional threads, the
-controller launches fresh interpreters with the original pytest arguments.
+pytest's own run loop. `--parallel` (`-j`) starts the parallel run loop after
+collection and deselection finish. If the user omits the count, the controller
+uses half the CPUs available to the process, rounded down to at least one.
+It starts no more workers than collected tests.
+
+On Linux, the controller forks the collected session when only one thread is
+present. If Python or `/proc` reports additional threads, the controller
+launches fresh interpreters with the original pytest arguments.
 Each interpreter collects independently and sends its ordered node IDs to
 the controller. The controller assigns work only after every worker's list
 matches.
@@ -29,8 +33,9 @@ session's stop conditions again after teardown, before allowing a worker to
 start its next assigned item. Only the worker runs the test and its fixture code.
 
 Workers redirect stdout and stderr at the file descriptor level to a temporary
-pair of files per item. The controller reads those files periodically for live
-output or at item completion for batched output, and removes them after display.
+pair of files per item. The controller reads those files periodically by default
+for live output, or at item completion with `--output=batched`, and removes
+them after display.
 The streams do not share the report connection and do not fill an IPC pipe
 while the controller handles another worker. Separate files prevent a late
 write to one item's descriptor from appearing under another item's label.

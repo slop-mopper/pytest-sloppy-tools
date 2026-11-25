@@ -6,7 +6,7 @@ serial and parallel runs:
 ```sh
 uv run --no-dev pytest --pretty
 uv run --no-dev pytest --pretty --output=batched
-uv run --no-dev pytest --pretty --workers=4 --output=live
+uv run --no-dev pytest --pretty --parallel=4
 ```
 
 Each row uses the function name, with a module or class qualifier if names
@@ -25,10 +25,10 @@ column with 12 spaces between the longest possible row and the percentage field.
 On a terminal, a quiet case updates its row in place when it fits. Test output
 starts on its own line; when the row continues, marks on earlier lines are dimmed
 and new marks keep their colours. Both serial and parallel runs honour
-`--output=live` and `--output=batched`. Without an explicit mode, serial runs
-show captured output after each test and display uncaptured output live,
-including pytest's live logs. Enabling live output does not split the row for
-quiet cases.
+`--output=live` and `--output=batched`. Parallel runs default to live output.
+Without an explicit mode, serial runs show captured output after each test
+and display uncaptured output live, including pytest's live logs. Enabling
+live output does not split the row for quiet cases.
 
 Output headers show the stream and case name between pairs of em dashes.
 A dim `—— end <stream> ——` footer closes each block. Consecutive live output
