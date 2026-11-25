@@ -89,10 +89,19 @@ def test_pretty_groups_cases_and_reprints_after_output(tmp_path: Path, mode: str
 	assert (
 		"\n————— stderr │ test_sim (2) —————\nsimulation trace\n————— end stderr —————\n\ntest_sim " in plain_progress
 	)
+	assert "\x1b[31m1 failed\x1b[0m" in summary
 	plain = re.sub(r"\x1b\[[0-9;]*m", "", summary)
 	assert "  × test_sim (2) — AssertionError: simulation failed\n\nResults: 2 passed, 1 failed, 1 skipped in " in plain
 	assert "short test summary info" not in plain
 	assert "simulation trace" not in plain
+
+
+@pytest.mark.parametrize(("colour", "expected"), [("yes", "\x1b[2m0 failed\x1b[0m"), ("no", "0 failed")])
+def test_pretty_dims_zero_failures(tmp_path: Path, colour: str, expected: str) -> None:
+	_write(tmp_path, "def test_passes(): pass\n")
+	result = _run(tmp_path, f"--color={colour}")
+	assert result.returncode == 0, result.stdout + result.stderr
+	assert f", {expected} in " in result.stdout
 
 
 def test_pretty_keeps_header_details_and_deselection_count(tmp_path: Path) -> None:

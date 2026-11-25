@@ -50,8 +50,10 @@ Simulation failed: exit code 1
 ```
 
 The summary lists failed cases with a short reason for each. A blank line
-separates the list from the outcome counts and elapsed time. Setup and teardown
-errors count as failures of the affected case, even if its test body passed.
+separates the list from the outcome counts and elapsed time. With colour
+enabled, `0 failed` is dimmed and nonzero failure counts are red. Setup and
+teardown errors count as failures of the affected case, even if its test body
+passed.
 Pytest's default tracebacks and repeated capture sections are hidden.
 Use `--tb=short --show-capture=no` to restore
 tracebacks without repeating captured output, or `--tb=long` for more detail.

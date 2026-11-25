@@ -360,11 +360,12 @@ class _Pretty:
 				reasons = "; ".join(filter(None, details))
 				terminal.write_line(f"  {cross} {self._case_label(case)}" + (f" — {reasons}" if reasons else ""))
 			terminal.write_line("")
-		parts = [
-			markup(f"{counts[outcome]} {outcome}", **colour)
-			for outcome, (_, colour) in _MARKS.items()
-			if counts[outcome] or outcome in ("passed", "failed") and self.completed
-		]
+		parts = []
+		for outcome, (_, colour) in _MARKS.items():
+			count = counts[outcome]
+			if count or outcome in ("passed", "failed") and self.completed:
+				style = {"light": True} if outcome == "failed" and count == 0 else colour
+				parts.append(markup(f"{count} {outcome}", **style))
 		if not parts:
 			parts.append("no tests ran")
 		for category, count in (
