@@ -19,7 +19,7 @@ column with 12 spaces between the longest possible row and the percentage field.
 | --- | --- | --- |
 | `·` | Passed | Green |
 | `×` | Failed, including setup or teardown errors | Red |
-| `s` | Skipped | Yellow |
+| `-` | Skipped | Yellow |
 | `x` / `X` | Expected failure / unexpected pass | Yellow |
 
 On a terminal, a quiet case updates its row in place when it fits. Test output

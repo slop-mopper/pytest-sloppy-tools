@@ -74,7 +74,7 @@ def test_pretty_groups_cases_and_reprints_after_output(tmp_path: Path, mode: str
 	passed = "\x1b[32m·\x1b[0m"
 	dimmed = "\x1b[2m·\x1b[0m"
 	failed = "\x1b[31m×\x1b[0m"
-	skipped = "\x1b[33ms\x1b[0m"
+	skipped = "\x1b[33m-\x1b[0m"
 	assert len(rows) == 3
 	assert passed * 2 in rows[0] and rows[0].endswith("50%")
 	assert dimmed * 2 + failed in rows[1] and rows[1].endswith("75%")
@@ -195,7 +195,7 @@ def test_pretty_phase_outcomes_and_disambiguation(tmp_path: Path) -> None:
 	width = len("test_a.py::test_sim  ×") + 12 + 4
 	assert rows == [
 		f"{'test_a.py::test_sim  ×':<{width - 4}} 33%",
-		f"{'test_skip  s':<{width - 4}} 66%",
+		f"{'test_skip  -':<{width - 4}} 66%",
 		f"{'test_b.py::test_sim  ·':<{width - 4}}100%",
 	]
 	assert "  × test_a.py::test_sim — teardown: ValueError: teardown error" in result.stdout
@@ -227,7 +227,7 @@ def test_pretty_parallel_uses_collection_order(tmp_path: Path) -> None:
 	)
 	result = _run(tmp_path, "--parallel=2", "--output=batched", "--color=no")
 	assert result.returncode == 0, result.stdout + result.stderr
-	assert re.findall(r"^test_sim  (.*?) +(\d+%)$", result.stdout, re.MULTILINE) == [("·s··", "100%")]
+	assert re.findall(r"^test_sim  (.*?) +(\d+%)$", result.stdout, re.MULTILINE) == [("·-··", "100%")]
 
 
 def _run_terminal(directory: Path, *options: str) -> str:

@@ -24,7 +24,7 @@ _SUMMARY_COLOURS = {"error": "red", "warnings": "yellow", "deselected": "cyan"}
 _MARKS = {
 	"passed": ("·", {"green": True}),
 	"failed": ("×", {"red": True}),
-	"skipped": ("s", {"yellow": True}),
+	"skipped": ("-", {"yellow": True}),
 	"xfailed": ("x", {"yellow": True}),
 	"xpassed": ("X", {"yellow": True}),
 }
