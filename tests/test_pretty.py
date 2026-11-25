@@ -67,7 +67,7 @@ def test_pretty_groups_cases_and_reprints_after_output(tmp_path: Path, mode: str
 		"conftest.py",
 	)
 	workers = [] if mode == "serial" else ["--parallel=1", f"--output={mode}"]
-	result = _run(tmp_path, "-v", "--color=yes", *workers)
+	result = _run(tmp_path, "-v", "--no-header", "--color=yes", *workers)
 	assert result.returncode == 1, result.stdout + result.stderr
 	progress, summary = result.stdout.split("CUSTOM SUMMARY", 1)
 	rows = [line for line in progress.splitlines() if line.startswith("test_sim ")]
@@ -82,13 +82,39 @@ def test_pretty_groups_cases_and_reprints_after_output(tmp_path: Path, mode: str
 	assert progress.index(rows[0]) < progress.index("simulation trace\n") < progress.index(rows[1])
 	assert progress.count("simulation trace\n") == 1
 	assert "PASSED" not in progress
-	assert "\x1b[2m—— end stderr ——\x1b[0m" in progress
+	assert "\x1b[2m————— end stderr —————\x1b[0m\n\n" in progress
 	plain_progress = re.sub(r"\x1b\[[0-9;]*m", "", progress)
-	assert "\n—— stderr │ test_sim (2) ——\nsimulation trace\n—— end stderr ——\n" in plain_progress
+	assert plain_progress.startswith("————— test session start —————\n————— collected 4 items\ntest_sim ")
+	assert "collecting ..." not in plain_progress
+	assert (
+		"\n————— stderr │ test_sim (2) —————\nsimulation trace\n————— end stderr —————\n\ntest_sim " in plain_progress
+	)
 	plain = re.sub(r"\x1b\[[0-9;]*m", "", summary)
 	assert "  × test_sim (2) — AssertionError: simulation failed\n\nResults: 2 passed, 1 failed, 1 skipped in " in plain
 	assert "short test summary info" not in plain
 	assert "simulation trace" not in plain
+
+
+def test_pretty_keeps_header_details_and_deselection_count(tmp_path: Path) -> None:
+	_write(tmp_path, "def test_keep(): pass\n\ndef test_drop(): pass\n")
+	_write(
+		tmp_path,
+		"""
+		def pytest_report_header(config):
+		    return "CUSTOM HEADER"
+
+		def pytest_report_collectionfinish(items):
+		    return f"CUSTOM COLLECTION: {len(items)} selected"
+		""",
+		"conftest.py",
+	)
+	result = _run(tmp_path, "-v", "--color=no", "-k", "keep")
+	assert result.returncode == 0, result.stdout + result.stderr
+	assert result.stdout.startswith("————— test session start —————\nplatform ")
+	header, collection = result.stdout.split("————— collected ", 1)
+	assert "CUSTOM HEADER\n" in header
+	assert collection.startswith("2 items / 1 deselected / 1 selected\n")
+	assert "CUSTOM COLLECTION: 1 selected\ntest_keep " in result.stdout
 
 
 def test_pretty_serial_uncaptured_output(tmp_path: Path) -> None:
@@ -107,8 +133,8 @@ def test_pretty_serial_uncaptured_output(tmp_path: Path) -> None:
 	result = _run(tmp_path, "-s", "--color=no")
 	assert result.returncode == 0, result.stdout + result.stderr
 	assert re.search(
-		r"^test_sim  · +50%\n—— stdout │ test_sim \(1\) ——\nnative output without newline\n"
-		r"—— end stdout ——\ntest_sim  ·· +100%$",
+		r"^test_sim  · +50%\n————— stdout │ test_sim \(1\) —————\nnative output without newline\n"
+		r"————— end stdout —————\ntest_sim  ·· +100%$",
 		result.stdout,
 		re.MULTILINE,
 	)
@@ -281,12 +307,13 @@ def test_pretty_terminal_output_starts_after_progress_row(tmp_path: Path, mode: 
 		""",
 	)
 	workers = [] if mode == "serial" else ["--parallel=1", f"--output={mode}"]
-	transcript = _run_terminal(tmp_path, *workers)
+	transcript = _run_terminal(tmp_path, "-v", "--no-header", *workers)
+	assert transcript.startswith("————— test session start —————\r\n————— collected 1 item\r\ntest_sim ")
 	assert re.search(
-		r"test_sim +0%\r\n—— stdout │ test_sim ——\r\nnative output without newline",
+		r"test_sim +0%\r\n————— stdout │ test_sim —————\r\nnative output without newline",
 		transcript,
 	)
-	assert re.search(r"\r\n—— end stdout ——\r\ntest_sim  · {12}100%\r\n", transcript)
+	assert re.search(r"\r\n————— end stdout —————\r\ntest_sim  · {12}100%\r\n", transcript)
 	assert transcript.count("stdout │ test_sim") == 1
 
 
@@ -316,8 +343,8 @@ def test_pretty_parameter_labels_in_output_and_summary(tmp_path: Path) -> None:
 	assert "\x1b[36mactive\x1b[0m\x1b[2m-\x1b[0m" in result.stdout
 	assert "\x1b[35mwidth\x1b[0m\x1b[2m=\x1b[0m\x1b[36m32\x1b[0m" in result.stdout
 	plain = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
-	assert "—— stdout │ test_positional (active-low-32) ——\nPOSITIONAL_OUTPUT\n—— end stdout ——\n" in plain
-	assert "—— log │ test_named (width=32; mode=active-low) ——" in plain
+	assert "————— stdout │ test_positional (active-low-32) —————\nPOSITIONAL_OUTPUT\n————— end stdout —————\n" in plain
+	assert "————— log │ test_named (width=32; mode=active-low) —————" in plain
 	assert "  × test_named (width=32; mode=active-low) — RuntimeError: Simulation failed: exit code 1" in plain
 	assert plain.count("SIMULATOR_LOG") == 1
 	assert "During handling of the above exception" not in plain
@@ -333,7 +360,8 @@ def test_pretty_parameter_labels_in_output_and_summary(tmp_path: Path) -> None:
 
 def test_pretty_collection_error_keeps_the_reason(tmp_path: Path) -> None:
 	_write(tmp_path, 'raise RuntimeError("collection broke")\n', "test_broken.py")
-	result = _run(tmp_path, "--color=no")
+	result = _run(tmp_path, "-v", "--no-header", "--color=no")
 	assert result.returncode == 2, result.stdout + result.stderr
+	assert result.stdout.startswith("————— test session start —————\n————— collected 0 items / 1 error\n")
 	assert "× test_broken.py [collection] — RuntimeError: collection broke\n\nResults:" in result.stdout
 	assert "1 collection error" in result.stdout

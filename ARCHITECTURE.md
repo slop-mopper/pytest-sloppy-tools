@@ -47,10 +47,12 @@ interrupted run stops and reaps the remaining workers. Each worker has its own
 process group so cleanup can also signal its subprocesses.
 
 `--pretty` installs an optional renderer for serial pytest and the parallel
-controller. During the run loop it replaces the terminal reporter's progress
-hooks while keeping pytest's report categories. The renderer assigns a slot to
-each collected item, sizes the percentage column from the labels and slot
-counts, and updates the row after teardown. It groups terminal output by item
+controller. It restyles the terminal reporter's session title and replaces the
+live collection counter with a single final line. During the run loop it
+replaces the reporter's progress hooks while keeping pytest's report
+categories. The renderer assigns a slot to each collected item, sizes the
+percentage column from the labels and slot counts, and updates the row after
+teardown. It groups terminal output by item
 and stream, using the collected item's name for the heading. At session finish
 it replaces pytest's terminal summary sections, leaving third-party summary
 hooks and the underlying test reports intact. The child process never renders

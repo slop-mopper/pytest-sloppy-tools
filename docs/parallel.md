@@ -69,7 +69,7 @@ subprocesses the test starts before it ends so their output reaches the terminal
 A test import or plugin can start background threads during collection, including
 native threads from NumPy or SciPy. Forking at this point can leave a worker
 waiting on a lock from a thread it did not inherit. `--parallel` automatically
-starts fresh interpreters instead and prints one notice with the thread count.
+starts fresh interpreters instead.
 It does not change your environment's BLAS thread settings. If workers compete
 for CPU time, adjust the worker count or your BLAS thread budget.
 

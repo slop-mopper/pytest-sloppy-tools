@@ -30,16 +30,23 @@ Without an explicit mode, serial runs show captured output after each test
 and display uncaptured output live, including pytest's live logs. Enabling
 live output does not split the row for quiet cases.
 
-Output headers show the stream and case name between pairs of em dashes.
-A dim `—— end <stream> ——` footer closes each block. Consecutive live output
-from the same case and stream shares a block. Parameter labels distinguish
-named keys from values and de-emphasise separators in pytest's hyphenated IDs.
-For example:
+The session title, collection count, and stream blocks use groups of five em
+dashes. Use `--no-header` to omit pytest's platform and plugin details, or `-q`
+to hide the title and collection count. Stream headers show the stream and
+case name. A dim footer closes each block, followed by a blank line for stderr.
+Consecutive live output from the same case and stream shares a block.
+Parameter labels distinguish named keys from values and de-emphasise separators
+in pytest's hyphenated IDs. For example:
 
 ```text
-—— stderr │ test_counter (width=32; reset=async) ——
+————— test session start —————
+————— collected 69 items
+…
+————— stderr │ test_counter (width=32; reset=async) —————
 Simulation failed: exit code 1
-—— end stderr ——
+————— end stderr —————
+
+…
 ```
 
 The summary lists failed cases with a short reason for each. A blank line

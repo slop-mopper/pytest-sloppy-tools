@@ -436,9 +436,8 @@ def _collect(session: pytest.Session, directory: Path, workers: list[_Worker], *
 def _run(session: pytest.Session, count: int, *, live: bool) -> None:
 	if not Path("/proc/self/task").is_dir():
 		raise pytest.UsageError("--parallel requires /proc")
-	threads = [thread.name for thread in threading.enumerate() if thread is not threading.current_thread()]
-	tasks = len(os.listdir("/proc/self/task"))
-	fresh = bool(threads or tasks != 1)
+	other_threads = any(thread is not threading.current_thread() for thread in threading.enumerate())
+	fresh = len(os.listdir("/proc/self/task")) != 1 or other_threads
 	if fresh:
 		config = session.config
 		if any(not isinstance(plugin, str) for plugin in config.invocation_params.plugins or ()):
@@ -447,10 +446,6 @@ def _run(session: pytest.Session, count: int, *, live: bool) -> None:
 			)
 		if config.getoption("debug", False):
 			raise pytest.UsageError("fresh workers cannot share a pytest debug file; rerun without --debug")
-		if terminal := config.pluginmanager.get_plugin("terminalreporter"):
-			detail = f"; Python threads: {', '.join(threads)}" if threads else ""
-			terminal.ensure_newline()
-			terminal.write_line(f"Starting fresh workers ({tasks} OS threads{detail}); each worker repeats collection.")
 	_flush()
 	with TemporaryDirectory(prefix="pytest-sloppy-") as path:
 		directory = Path(path)

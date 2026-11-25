@@ -16,6 +16,7 @@ from _pytest.terminal import TerminalReporter, format_session_duration
 
 
 _PLUGIN = "sloppy-pretty"
+_EDGE = "—" * 5
 _PROGRESS_GAP = 12
 _PERCENT_WIDTH = 4
 _STREAM_COLOURS = {"stdout": "blue", "stderr": "yellow", "log": "purple"}
@@ -243,7 +244,7 @@ class _Pretty:
 		markup = self.terminal._tw.markup
 		colour = _STREAM_COLOURS.get(stream, "blue")
 		label = markup(stream, **{colour: True, "bold": True})
-		edge = markup("——", light=True)
+		edge = markup(_EDGE, light=True)
 		case = self._case_label(self.cases[index])
 		self.terminal.write(f"{edge} {label} {markup('│', light=True)} {case} {edge}\n", flush=True)
 		self.output_block = index, stream
@@ -252,8 +253,9 @@ class _Pretty:
 		if self.output_block is not None:
 			_, stream = self.output_block
 			self.output_block = None
-			footer = self.terminal._tw.markup(f"—— end {stream} ——", light=True)
-			self.terminal.write(f"{footer}\n", flush=True)
+			footer = self.terminal._tw.markup(f"{_EDGE} end {stream} {_EDGE}", light=True)
+			breaks = "\n\n" if stream == "stderr" else "\n"
+			self.terminal.write(footer + breaks, flush=True)
 
 	def finish(self, index: int) -> None:
 		case = self.cases[index]
@@ -267,6 +269,53 @@ class _Pretty:
 			row.fresh.add(case.slot)
 		if self._can_rewrite() or case.output_shown or len(row.marks) == row.size:
 			self._show(row)
+
+	@pytest.hookimpl(wrapper=True, tryfirst=True)
+	def pytest_sessionstart(self) -> Generator[None, object, object]:
+		"""Restyle the title while keeping pytest's header details and timing."""
+		terminal = self.terminal
+		original = terminal.write_sep
+
+		def write_sep(sep: str, title: str | None = None, fullwidth: int | None = None, **markup: bool) -> None:
+			if sep == "=" and title == "test session starts":
+				terminal.write_line(f"{_EDGE} test session start {_EDGE}", **markup)
+			else:
+				original(sep, title, fullwidth, **markup)
+
+		terminal.write_sep = write_sep
+		try:
+			return (yield)
+		finally:
+			terminal.write_sep = original
+
+	@pytest.hookimpl(wrapper=True, tryfirst=True)
+	def pytest_collection(self, session: pytest.Session) -> Generator[None, object, object]:
+		"""Replace the live collection counter with a single final line."""
+		terminal = self.terminal
+		start = next(impl for impl in session.config.hook.pytest_collection.get_hookimpls() if impl.plugin is terminal)
+		original = start.function, terminal.report_collect
+
+		def report_collect(final: bool = False) -> None:
+			if not final or terminal.verbosity < 0:
+				return
+			count = terminal._numcollected
+			line = f"{_EDGE} collected {count} {'item' if count == 1 else 'items'}"
+			for category, singular, plural in (
+				("error", "error", "errors"),
+				("deselected", "deselected", "deselected"),
+				("skipped", "skipped", "skipped"),
+			):
+				if total := len(terminal.stats.get(category, ())):
+					line += f" / {total} {singular if total == 1 else plural}"
+			if len(session.items) < count:
+				line += f" / {len(session.items)} selected"
+			terminal.write_line(line)
+
+		start.function, terminal.report_collect = _noop, report_collect
+		try:
+			return (yield)
+		finally:
+			start.function, terminal.report_collect = original
 
 	@pytest.hookimpl(wrapper=True, tryfirst=True)
 	def pytest_runtestloop(self, session: pytest.Session) -> Generator[None, object, object]:

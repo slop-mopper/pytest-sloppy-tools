@@ -131,11 +131,7 @@ def test_parallel_cases_and_output(tmp_path: Path, mode: str, fresh_workers: boo
 	result = _pytest(tmp_path, "--parallel=2", f"--output={mode}", "--log-cli-level=INFO", "--basetemp=test-tmp")
 	assert result.returncode == 0, result.stdout + result.stderr
 	assert (tmp_path / "collected").read_text() == "one collection\n" * (3 if fresh_workers else 1)
-	if fresh_workers:
-		assert result.stdout.count("Starting fresh workers") == 1
-		assert "2 OS threads; Python threads: example-collection-thread" in result.stdout
-	else:
-		assert "Starting fresh workers" not in result.stdout
+	assert "Starting fresh workers" not in result.stdout + result.stderr
 	assert "6 passed" in result.stdout
 	assert result.stderr == ""
 	assert len(set(re.findall(r"CASE \d+ PID (\d+)", result.stdout))) == 2
@@ -489,6 +485,6 @@ def test_fresh_workers_replay_selection_and_keep_one_junit_report(tmp_path: Path
 	command = _command("--parallel=2", "--output=batched", "--lf", "--", "test_example.py")
 	result = subprocess.run(command, cwd=tmp_path, env=env, text=True, capture_output=True, timeout=20, check=False)
 	assert result.returncode == 1, result.stdout + result.stderr
-	assert "Starting fresh workers" in result.stdout
+	assert "Starting fresh workers" not in result.stdout + result.stderr
 	assert "1 failed, 3 deselected" in result.stdout
 	assert "SELECTED=0" not in result.stdout
