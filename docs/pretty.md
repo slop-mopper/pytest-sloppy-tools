@@ -30,21 +30,23 @@ show captured output after each test and display uncaptured output live,
 including pytest's live logs. Enabling live output does not split the row for
 quiet cases.
 
-Output blocks start with the stream and case name, and end with a dim
-`—— end <stream>` line. Consecutive live output from the same case and stream
-shares a block. Parameter labels distinguish named keys from values and
-de-emphasise separators in pytest's hyphenated IDs. For example:
+Output headers show the stream and case name between pairs of em dashes.
+A dim `—— end <stream> ——` footer closes each block. Consecutive live output
+from the same case and stream shares a block. Parameter labels distinguish
+named keys from values and de-emphasise separators in pytest's hyphenated IDs.
+For example:
 
 ```text
-stderr │ test_counter (width=32; reset=async)
+—— stderr │ test_counter (width=32; reset=async) ——
 Simulation failed: exit code 1
-—— end stderr
+—— end stderr ——
 ```
 
-The summary lists failed cases and a short reason, followed by outcome counts
-and elapsed time. Setup and teardown errors count as failures of the affected
-case, even if its test body passed. Pytest's default tracebacks and repeated
-capture sections are hidden. Use `--tb=short --show-capture=no` to restore
+The summary lists failed cases with a short reason for each. A blank line
+separates the list from the outcome counts and elapsed time. Setup and teardown
+errors count as failures of the affected case, even if its test body passed.
+Pytest's default tracebacks and repeated capture sections are hidden.
+Use `--tb=short --show-capture=no` to restore
 tracebacks without repeating captured output, or `--tb=long` for more detail.
 `--no-summary` hides the failed-case list while keeping the outcome counts.
 

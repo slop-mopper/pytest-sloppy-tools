@@ -243,14 +243,16 @@ class _Pretty:
 		markup = self.terminal._tw.markup
 		colour = _STREAM_COLOURS.get(stream, "blue")
 		label = markup(stream, **{colour: True, "bold": True})
-		self.terminal.write(f"{label} {markup('│', light=True)} {self._case_label(self.cases[index])}\n", flush=True)
+		edge = markup("——", light=True)
+		case = self._case_label(self.cases[index])
+		self.terminal.write(f"{edge} {label} {markup('│', light=True)} {case} {edge}\n", flush=True)
 		self.output_block = index, stream
 
 	def _end_output(self) -> None:
 		if self.output_block is not None:
 			_, stream = self.output_block
 			self.output_block = None
-			footer = self.terminal._tw.markup(f"—— end {stream}", light=True)
+			footer = self.terminal._tw.markup(f"—— end {stream} ——", light=True)
 			self.terminal.write(f"{footer}\n", flush=True)
 
 	def finish(self, index: int) -> None:
@@ -308,6 +310,7 @@ class _Pretty:
 						details.append(f"{phase}: {reason}" if reason else phase)
 				reasons = "; ".join(filter(None, details))
 				terminal.write_line(f"  {cross} {self._case_label(case)}" + (f" — {reasons}" if reasons else ""))
+			terminal.write_line("")
 		parts = [
 			markup(f"{counts[outcome]} {outcome}", **colour)
 			for outcome, (_, colour) in _MARKS.items()
